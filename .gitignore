@@ -1,0 +1,18 @@
+# ── Proprietary: experience-driven signal suite (not distributed) ────────
+weisswave/combined.py
+
+# ── Market data & search results (large / regenerable / private) ─────────
+market.duckdb
+market.duckdb.wal
+finder_results.pkl
+stock_data/
+stock_data_hourly/
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── Local tooling ─────────────────────────────────────────────────────────
+.claude/

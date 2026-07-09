@@ -1,0 +1,13 @@
+# Core (indicators, signals, backtesting)
+pandas>=2.2
+numpy>=1.26
+
+# Data fetching + storage
+duckdb>=1.0
+yahooquery>=2.4
+requests>=2.31
+lxml>=5.0
+
+# Dashboard
+streamlit>=1.40
+plotly>=5.24
