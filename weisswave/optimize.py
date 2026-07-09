@@ -36,6 +36,15 @@ EXIT_OPTIONS = {
 }
 
 
+def benchmark_index(frames: dict) -> pd.Series:
+    """Equal-weight buy-and-hold index of the loaded universe: the average
+    per-bar return across symbols, compounded. This is 'what the market
+    did' for benchmarking strategies over the same window."""
+    closes = pd.DataFrame({s: f["Close"] for s, f in frames.items()})
+    rets = closes.pct_change().mean(axis=1)
+    return (1 + rets.fillna(0)).cumprod()
+
+
 def prepare_universe(frames: dict, entry_signals=None, filter_cols=None,
                      window: int = 5, horizons=(5, 10),
                      train_frac: float = 0.7) -> tuple:
@@ -43,6 +52,7 @@ def prepare_universe(frames: dict, entry_signals=None, filter_cols=None,
     All rolling ops happen per symbol here — nothing leaks across symbols."""
     entry_signals = list(entry_signals or SIGNAL_COLUMNS_BULL)
     filter_cols = list(filter_cols if filter_cols is not None else FILTER_COLUMNS)
+    bench = benchmark_index(frames)
     data = {}
     for sym, sig in frames.items():
         n = len(sig)
@@ -62,6 +72,7 @@ def prepare_universe(frames: dict, entry_signals=None, filter_cols=None,
             "open": sig["Open"].to_numpy(float),
             "low": sig["Low"].to_numpy(float),
             "close": sig["Close"].to_numpy(float),
+            "bench": bench.reindex(sig.index).ffill().to_numpy(float),
             "cut": int(n * train_frac),
         }
     meta = {"entry_signals": entry_signals, "filter_cols": filter_cols,
@@ -128,16 +139,20 @@ def rank_entry_combos(data: dict, meta: dict, max_size: int = 2,
     return res.sort_values("score", ascending=False).reset_index(drop=True)
 
 
-def _half_stats(rets: list, bars: list, prefix: str) -> dict:
+def _half_stats(rets: list, excess: list, prefix: str) -> dict:
     r = np.asarray(rets)
     if len(r) == 0:
         return {f"{prefix}_n": 0, f"{prefix}_win": np.nan,
-                f"{prefix}_avg": np.nan, f"{prefix}_pf": np.nan}
+                f"{prefix}_avg": np.nan, f"{prefix}_xs": np.nan,
+                f"{prefix}_pf": np.nan}
     wins = r[r > 0].sum()
     losses = -r[r < 0].sum()
     return {f"{prefix}_n": len(r),
             f"{prefix}_win": (r > 0).mean(),
             f"{prefix}_avg": r.mean(),
+            # avg return per trade MINUS the market's return over the same
+            # holding span — positive means the trade beat buy-and-hold
+            f"{prefix}_xs": float(np.mean(excess)),
             f"{prefix}_pf": wins / losses if losses > 0 else np.inf}
 
 
@@ -177,11 +192,14 @@ def find_strategies(frames: dict, entry_signals=None, filter_cols=None,
             ext = exit_arrays[exit_name][sym]
             cut = d["cut"]
             for label, sl in (("train", slice(0, cut)), ("test", slice(cut, None))):
-                for _, xi_, epx, xpx, _r in _simulate(
+                b = d["bench"][sl]
+                for ei, xi_, epx, xpx, _r in _simulate(
                         d["open"][sl], d["low"][sl], d["close"][sl],
                         ent[sl], ext[sl], stop, hold):
-                    halves[label][0].append(xpx / epx - 1)
-                    halves[label][1].append(1)
+                    ret = xpx / epx - 1
+                    market = b[xi_] / b[ei] - 1 if b[ei] > 0 else 0.0
+                    halves[label][0].append(ret)
+                    halves[label][1].append(ret - market)
         row = {"entry": cand["entry"], "filter": cand["filter"],
                "exit": exit_name,
                "stop": f"{stop:.0%}" if stop else "-",
@@ -197,7 +215,9 @@ def find_strategies(frames: dict, entry_signals=None, filter_cols=None,
             progress_cb((gi + 1) / len(grid),
                         f"Simulating config {gi + 1}/{len(grid)}")
 
-    res = pd.DataFrame(results).sort_values("train_avg", ascending=False) \
+    # Rank by TRAIN excess return per trade: a config only rises when it
+    # beat simply holding the market over the same spans.
+    res = pd.DataFrame(results).sort_values("train_xs", ascending=False) \
         .reset_index(drop=True)
     return ranked, res
 
@@ -225,7 +245,14 @@ def evaluate_config(frames: dict, entry_cols: list, min_count: int,
             parts.append(t)
     if not parts:
         return pd.DataFrame()
-    return pd.concat(parts, ignore_index=True).sort_values("entry_idx")
+    trades = pd.concat(parts, ignore_index=True).sort_values("entry_idx") \
+        .reset_index(drop=True)
+    bench = benchmark_index(frames)
+    b_entry = bench.reindex(trades["entry_idx"], method="ffill").to_numpy()
+    b_exit = bench.reindex(trades["exit_idx"], method="ffill").to_numpy()
+    trades["market_ret"] = b_exit / b_entry - 1
+    trades["excess"] = trades["ret"] - trades["market_ret"]
+    return trades
 
 
 def per_symbol_stats(trades: pd.DataFrame, min_trades: int = 3) -> pd.DataFrame:
@@ -239,6 +266,8 @@ def per_symbol_stats(trades: pd.DataFrame, min_trades: int = 3) -> pd.DataFrame:
         "avg_ret": g.mean(),
         "total_ret": g.sum(),
     })
+    if "excess" in trades.columns:
+        stats["avg_excess"] = trades.groupby("symbol")["excess"].mean()
     test = trades[trades["half"] == "test"].groupby("symbol")["ret"]
     stats["test_trades"] = test.count().reindex(stats.index).fillna(0).astype(int)
     stats["test_avg"] = test.mean().reindex(stats.index)

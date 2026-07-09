@@ -50,9 +50,26 @@ composite confirmation window. Tabs:
   config and exports it as a bot-ready JSON strategy file.
 - **Strategy backtest** — pick entry/exit signal combos, require N-signal
   confluence within a window, stop-loss and max-hold; trade stats,
-  cumulative return curve, exit-reason breakdown, trade list
-- **Today's signals** — manual-entry screener: which symbols fire a
-  chosen rule (manual or loaded from a finder result) on the latest bars
+  strategy-vs-market curve, exit-reason breakdown, trade list
+- **Today's signals** — entry screener with named strategy presets
+  (textbook: MACD cross, golden cross, RSI bounce; plus the WeissWave
+  suite when present), manual rules, or loaded finder results
+
+## Buy-and-hold honesty check
+
+Every backtest and finder result is benchmarked against an equal-weight
+buy-and-hold index of the same universe over the same period:
+
+- per trade: `excess = trade return - market return over the same
+  holding span`
+- the finder ranks configurations by average TRAIN excess (`train_xs`),
+  so a strategy only ranks highly when it beat simply holding the market
+- the backtest tab shows the market's window return, the average excess
+  per trade, the beat-market rate, and warns outright when buy-and-hold
+  would have done better
+
+Stage 1 of the finder is inherently market-relative too: signals are
+scored by forward-return edge versus the all-bars baseline.
 
 Signal computation over the full universe is cached per parameter set —
 the first run takes a minute, tweaks after that are fast.

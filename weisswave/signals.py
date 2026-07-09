@@ -10,7 +10,7 @@ to any combination.
 
 import pandas as pd
 
-from .core import crossover, crossunder, normalize_ohlcv, sma
+from .core import crossover, crossunder, ema, normalize_ohlcv, rsi, sma
 from .wavetrend import wavetrend
 
 # The experience-driven "Combined v1" suite is proprietary and excluded
@@ -72,6 +72,15 @@ def build_signals(df: pd.DataFrame,
     out["wtv_buy"] = out["wt_exit_oversold"] & recent(bull_confirm, confirm_window)
     out["wtv_sell"] = out["wt_enter_overbought"] & recent(bear_confirm, confirm_window)
 
+    # ── Standard textbook signals (public benchmark strategies) ──────────
+    macd = ema(df["Close"], 12) - ema(df["Close"], 26)
+    macd_sig = ema(macd, 9)
+    out["macd_cross_up"] = crossover(macd, macd_sig)
+    out["macd_cross_down"] = crossunder(macd, macd_sig)
+    rsi14 = rsi(df["Close"], 14)
+    out["rsi_oversold_cross"] = crossover(rsi14, pd.Series(30.0, index=df.index))
+    out["rsi_overbought_cross"] = crossunder(rsi14, pd.Series(70.0, index=df.index))
+
     # ── Combined v1 Prod signal suite (proprietary; optional) ────────────
     if combined_signals is not None:
         out = out.join(combined_signals(df, out))
@@ -82,6 +91,8 @@ def build_signals(df: pd.DataFrame,
     out["minervini"] = out["sma50"] > out["sma200"]     # Stage-2 uptrend
     out["above_50ma"] = df["Close"] > out["sma50"]
     out["in_up_wave"] = out["wave"] == 1
+    out["golden_cross"] = crossover(out["sma50"], out["sma200"])
+    out["death_cross"] = crossunder(out["sma50"], out["sma200"])
 
     return out
 
@@ -111,6 +122,8 @@ SIGNAL_COLUMNS_BULL = [
     "volume_cross_up", "up_switch", "up_continue",
     "very_heavy_buy", "heavy_buy",
     "wtv_buy",
+    # standard textbook signals
+    "macd_cross_up", "rsi_oversold_cross", "golden_cross",
 ] + _COMBINED_BULL
 
 FILTER_COLUMNS = ["minervini", "above_50ma", "in_up_wave", "buy_dominant"]
@@ -121,4 +134,6 @@ SIGNAL_COLUMNS_BEAR = [
     "volume_cross_down", "down_switch", "down_continue",
     "very_heavy_sell", "heavy_sell",
     "wtv_sell",
+    # standard textbook signals
+    "macd_cross_down", "rsi_overbought_cross", "death_cross",
 ] + _COMBINED_BEAR

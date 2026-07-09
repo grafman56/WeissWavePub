@@ -18,8 +18,9 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from weisswave.db import DB_PATH, connect, coverage_report, list_symbols, load_prices
-from weisswave.optimize import (EXIT_OPTIONS, evaluate_config,
-                                find_strategies, per_symbol_stats)
+from weisswave.optimize import (EXIT_OPTIONS, benchmark_index,
+                                evaluate_config, find_strategies,
+                                per_symbol_stats)
 from weisswave.signals import (FILTER_COLUMNS, SIGNAL_COLUMNS_BEAR,
                                SIGNAL_COLUMNS_BULL, build_signals,
                                combine_signals)
@@ -278,26 +279,57 @@ with tab_bt:
         else:
             trades = pd.concat(all_trades, ignore_index=True) \
                 .sort_values("exit_idx").reset_index(drop=True)
+            # Benchmark: what the (equal-weight) market did over this window
+            # and over each trade's own holding span.
+            bench = benchmark_index(frames)
+            b_entry = bench.reindex(trades["entry_idx"], method="ffill").to_numpy()
+            b_exit = bench.reindex(trades["exit_idx"], method="ffill").to_numpy()
+            trades["market_ret"] = b_exit / b_entry - 1
+            trades["excess"] = trades["ret"] - trades["market_ret"]
+            market_window = bench.iloc[-1] / bench.iloc[0] - 1
+
             wins = trades.loc[trades.ret > 0, "ret"].sum()
             losses = -trades.loc[trades.ret < 0, "ret"].sum()
-            m = st.columns(6)
+            m = st.columns(4)
             m[0].metric("Trades", len(trades))
             m[1].metric("Win rate", f"{(trades.ret > 0).mean():.1%}")
-            m[2].metric("Avg return", f"{trades.ret.mean():.2%}")
-            m[3].metric("Median", f"{trades.ret.median():.2%}")
-            m[4].metric("Profit factor",
+            m[2].metric("Avg return / trade", f"{trades.ret.mean():.2%}")
+            m[3].metric("Profit factor",
                         f"{wins / losses:.2f}" if losses > 0 else "inf")
-            m[5].metric("Avg bars held", f"{trades.bars.mean():.1f}")
+            m = st.columns(4)
+            m[0].metric("Avg excess vs market / trade",
+                        f"{trades.excess.mean():+.2%}",
+                        help="Trade return minus the equal-weight market's "
+                             "return over the same holding span. Negative "
+                             "means buy-and-hold did the job better.")
+            m[1].metric("Beat-market rate",
+                        f"{(trades.excess > 0).mean():.1%}")
+            m[2].metric("Market buy & hold (window)", f"{market_window:+.1%}")
+            m[3].metric("Avg bars held", f"{trades.bars.mean():.1f}")
+            if trades.excess.mean() <= 0:
+                st.warning("This configuration did NOT beat buy-and-hold "
+                           "over the same holding periods — the market did "
+                           "the work, not the strategy.")
 
             # Trades from different symbols overlap in time, so compounding
             # them sequentially would be meaningless; sum fixed-stake returns.
-            eq = trades.set_index("exit_idx")["ret"].cumsum() * 100
-            fig = go.Figure(go.Scatter(x=eq.index, y=eq, mode="lines",
-                                       name="equity"))
-            fig.update_layout(title="Cumulative return, % (fixed 1-unit stake "
-                                    "per trade, ordered by exit date)",
+            # The benchmark line sums the MARKET's return over the same trade
+            # spans — same scale, so the gap between lines is the cumulative
+            # excess the strategy actually added.
+            by_exit = trades.set_index("exit_idx")
+            eq = by_exit["ret"].cumsum() * 100
+            mkt = by_exit["market_ret"].cumsum() * 100
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=eq.index, y=eq, mode="lines",
+                                     name="strategy trades"))
+            fig.add_trace(go.Scatter(x=mkt.index, y=mkt, mode="lines",
+                                     name="market over same trade spans",
+                                     line=dict(dash="dot")))
+            fig.update_layout(title="Cumulative per-trade return vs the market "
+                                    "over the same holding spans (1-unit stake)",
                               yaxis_ticksuffix="%",
-                              height=350, margin=dict(t=40, b=20))
+                              height=350, margin=dict(t=40, b=20),
+                              legend=dict(orientation="h", y=1.12))
             st.plotly_chart(fig, width="stretch")
 
             st.subheader("Exit reasons")
@@ -387,7 +419,7 @@ with tab_finder:
 
     if "finder_results" not in st.session_state and os.path.exists(FINDER_CACHE):
         saved = pd.read_pickle(FINDER_CACHE)
-        if "entry_cols" in saved["results"].columns:  # ignore stale schemas
+        if "train_xs" in saved["results"].columns:  # ignore stale schemas
             st.session_state["finder_results"] = saved["results"]
             st.session_state["finder_window"] = saved["window"]
             st.session_state["finder_train_frac"] = saved.get("train_frac", 0.7)
@@ -397,19 +429,22 @@ with tab_finder:
         res = st.session_state["finder_results"]
         cols = (["interval"] if "interval" in res.columns else []) + \
             ["entry", "filter", "exit", "stop", "max_hold",
-             "train_n", "train_win", "train_avg", "train_pf",
-             "test_n", "test_win", "test_avg", "test_pf"]
+             "train_n", "train_win", "train_avg", "train_xs", "train_pf",
+             "test_n", "test_win", "test_avg", "test_xs", "test_pf"]
         show = res[cols].head(25)
-        st.subheader("Best configurations (ranked by train avg return)")
+        st.subheader("Best configurations (ranked by train EXCESS return "
+                     "vs buy-and-hold)")
         st.dataframe(_pct_style(
             show,
-            [c for c in show.columns if c.endswith(("_win", "_avg"))],
-            ["train_avg", "test_avg"]),
+            [c for c in show.columns if c.endswith(("_win", "_avg", "_xs"))],
+            ["train_avg", "test_avg", "train_xs", "test_xs"]),
             width="stretch", height=520)
-        robust = res[(res.test_avg > 0) & (res.test_n >= 20)]
-        st.caption(f"{len(robust)} of {len(res)} configs are also positive "
-                   f"out-of-sample with >=20 test trades. Click a column "
-                   f"header to re-sort (e.g. by test_avg).")
+        robust = res[(res.test_xs > 0) & (res.test_n >= 20)]
+        st.caption(f"'_xs' = avg return per trade minus the equal-weight "
+                   f"market's return over the same holding span — the "
+                   f"buy-and-hold honesty check. {len(robust)} of {len(res)} "
+                   f"configs also beat the market out-of-sample with >=20 "
+                   f"test trades. Click a column header to re-sort.")
 
         # ── drill-down: where does a config actually work? ────────────────
         with st.expander("Drill into a configuration (per-symbol results, "
@@ -442,7 +477,8 @@ with tab_finder:
                               int((stats["avg_ret"] > 0).sum()))
                     st.dataframe(stats.style.format(
                         {"win_rate": "{:.0%}", "avg_ret": "{:.2%}",
-                         "total_ret": "{:.1%}", "test_avg": "{:.2%}"},
+                         "total_ret": "{:.1%}", "test_avg": "{:.2%}",
+                         "avg_excess": "{:+.2%}"},
                         na_rep="-"), width="stretch", height=380)
             bot_config = {
                 "name": f"{row['entry']} | {row['filter']}",
@@ -474,6 +510,33 @@ with tab_finder:
 
 # ── tab 6: today's signals (manual-entry screener) ────────────────────────────
 
+# Named entry rules: textbook strategies everyone knows, plus the WeissWave
+# suite when the proprietary module is present. Each maps to
+# (entry signals, min_count, confluence window, regime filter).
+PRESET_STRATEGIES = {
+    "Standard: MACD cross": (["macd_cross_up"], 1, 0, None),
+    "Standard: MACD cross in uptrend": (["macd_cross_up"], 1, 0, "minervini"),
+    "Standard: Golden cross (50/200)": (["golden_cross"], 1, 0, None),
+    "Standard: RSI oversold bounce": (["rsi_oversold_cross"], 1, 0, None),
+    "Standard: MACD cross + volume cross": (
+        ["macd_cross_up", "volume_cross_up"], 2, 5, None),
+    "Weis: WT oversold cross + heavy buying": (
+        ["wt_cross_up_oversold", "very_heavy_buy"], 2, 5, "buy_dominant"),
+    "Weis: WT divergence + volume switch": (
+        ["wt_bull_div", "up_switch"], 1, 5, "in_up_wave"),
+}
+_WW_PRESETS = {
+    "WeissWave: golden (TDI + volume cross)": (["golden"], 1, 0, None),
+    "WeissWave: combined wtbuy": (["combined_wtbuy"], 1, 0, None),
+    "WeissWave: divergence confluence": (
+        ["wt_bull_div", "adp_bull_div"], 1, 5, "in_up_wave"),
+    "WeissWave: TDI long + MACD hidden div": (
+        ["tdi_long", "macd_hidden_bull_div"], 2, 5, "in_up_wave"),
+}
+for _name, _cfg in _WW_PRESETS.items():
+    if all(c in SIGNAL_COLUMNS_BULL for c in _cfg[0]):
+        PRESET_STRATEGIES[_name] = _cfg
+
 with tab_today:
     st.caption("Which symbols fire a chosen entry rule at the END of the "
                "selected date range — with the range ending today this is "
@@ -482,10 +545,16 @@ with tab_today:
                "data on the Database tab first; the latest daily bar is "
                "partial if fetched while the market is open.")
     have_finder = "finder_results" in st.session_state
-    source = st.radio("Entry rule", ["Manual"] + (["From finder"] if have_finder else []),
+    source = st.radio("Entry rule",
+                      ["Presets", "Manual"] + (["From finder"] if have_finder else []),
                       horizontal=True)
     screen_interval = interval
-    if source == "From finder":
+    if source == "Presets":
+        pick = st.selectbox("Strategy", list(PRESET_STRATEGIES))
+        entry_cols, min_count, window, filter_col = PRESET_STRATEGIES[pick]
+        st.write(f"Entry: **{' + '.join(entry_cols)}** (>= {min_count} in "
+                 f"{window} bars), filter: **{filter_col or 'none'}**")
+    elif source == "From finder":
         res = st.session_state["finder_results"]
         labels = [f"#{i + 1}  [{r.get('interval', interval)}]  {r['entry']}  |  "
                   f"filter: {r['filter']}  (test avg "
