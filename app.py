@@ -360,6 +360,8 @@ with tab_bt:
         # excess the strategy actually added.
         st.markdown("**Cumulative per-trade return vs the market over the "
                     "same holding spans (1-unit stake)**")
+        show_dots = st.checkbox("Show every trade as a dot (green=win, "
+                                "red=loss)", key="bt_dots")
         by_exit = trades.set_index("exit_idx")
         eq = by_exit["ret"].cumsum() * 100
         mkt = by_exit["market_ret"].cumsum() * 100
@@ -369,6 +371,29 @@ with tab_bt:
         fig.add_trace(go.Scatter(x=mkt.index, y=mkt, mode="lines",
                                  name="market over same trade spans",
                                  line=dict(dash="dot")))
+        # eq is positionally aligned with `trades` (both sorted by exit_idx)
+        if show_dots:
+            fig.add_trace(go.Scatter(
+                x=trades["exit_idx"], y=eq.to_numpy(), mode="markers",
+                name="trades",
+                marker=dict(size=6,
+                            color=trades["ret"].gt(0)
+                            .map({True: "#2e7d32", False: "#c62828"})),
+                hoverinfo="text",
+                hovertext=[f"{t.symbol}  {t.ret:+.2%}  ({t.exit_reason}, "
+                           f"{t.bars} bars)" for t in trades.itertuples()]))
+        # trade clicked in the Trades table below -> star it on the chart
+        tbl_state = st.session_state.get("bt_trades_table")
+        sel_rows = list(getattr(getattr(tbl_state, "selection", None),
+                                "rows", [])) if tbl_state else []
+        if sel_rows and sel_rows[0] < len(trades):
+            t = trades.iloc[sel_rows[0]]
+            fig.add_trace(go.Scatter(
+                x=[t["exit_idx"]], y=[eq.iloc[sel_rows[0]]],
+                mode="markers+text", name="selected trade",
+                marker=dict(size=16, color="gold", symbol="star"),
+                text=[f"{t['symbol']} {t['ret']:+.2%}"],
+                textposition="top center", textfont=dict(color="gold")))
         fig.update_layout(yaxis_ticksuffix="%",
                           height=360, margin=dict(t=10, b=20),
                           legend=dict(orientation="h", yanchor="bottom",
@@ -381,11 +406,14 @@ with tab_bt:
                      .style.format({"avg": "{:.2%}", "win_rate": "{:.1%}"}),
                      width="stretch")
         st.subheader("Trades")
+        st.caption("Click a trade to highlight it on the chart above.")
         st.dataframe(trades[["symbol", "entry_idx", "exit_idx", "entry_px",
                              "exit_px", "ret", "bars", "exit_reason"]]
                      .style.format({"entry_px": "{:.2f}", "exit_px": "{:.2f}",
                                     "ret": "{:.2%}"}),
-                     width="stretch", height=400)
+                     width="stretch", height=400,
+                     on_select="rerun", selection_mode="single-row",
+                     key="bt_trades_table")
 
         # ── fine-resolution fill verification ────────────────────────────
         st.subheader("Fine-resolution fill check")

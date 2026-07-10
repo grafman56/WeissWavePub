@@ -3,6 +3,12 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.3.2 — 2026-07-10
+
+- Backtest chart: click a trade in the Trades table to highlight it as a
+  gold star on the strategy-vs-market chart; optional checkbox overlays
+  every trade as a green/red dot with hover details (off by default).
+
 ## 0.3.1 — 2026-07-10
 
 - Strategy finder results table is row-clickable: clicking a row loads
