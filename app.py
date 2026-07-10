@@ -92,8 +92,11 @@ if "bt_pending" in st.session_state:
         "bt_loaded_label": _cfg["label"]})
     st.session_state.pop("bt_result", None)
 
+from weisswave import __version__
+
 with st.sidebar:
     st.title("WeissWave")
+    st.caption(f"v{__version__}")
     interval = st.radio("Timeframe", ["1d", "1h"], horizontal=True,
                         key="interval")
     all_symbols = get_symbols(interval, db_stamp())
@@ -355,6 +358,8 @@ with tab_bt:
         # The benchmark line sums the MARKET's return over the same trade
         # spans — same scale, so the gap between lines is the cumulative
         # excess the strategy actually added.
+        st.markdown("**Cumulative per-trade return vs the market over the "
+                    "same holding spans (1-unit stake)**")
         by_exit = trades.set_index("exit_idx")
         eq = by_exit["ret"].cumsum() * 100
         mkt = by_exit["market_ret"].cumsum() * 100
@@ -364,11 +369,10 @@ with tab_bt:
         fig.add_trace(go.Scatter(x=mkt.index, y=mkt, mode="lines",
                                  name="market over same trade spans",
                                  line=dict(dash="dot")))
-        fig.update_layout(title="Cumulative per-trade return vs the market "
-                                "over the same holding spans (1-unit stake)",
-                          yaxis_ticksuffix="%",
-                          height=350, margin=dict(t=40, b=20),
-                          legend=dict(orientation="h", y=1.12))
+        fig.update_layout(yaxis_ticksuffix="%",
+                          height=360, margin=dict(t=10, b=20),
+                          legend=dict(orientation="h", yanchor="bottom",
+                                      y=1.02, x=0))
         st.plotly_chart(fig, width="stretch")
 
         st.subheader("Exit reasons")
@@ -569,17 +573,49 @@ with tab_finder:
         show = res[cols].head(25)
         st.subheader("Best configurations (ranked by train EXCESS return "
                      "vs buy-and-hold)")
-        st.dataframe(_pct_style(
+        event = st.dataframe(_pct_style(
             show,
             [c for c in show.columns if c.endswith(("_win", "_avg", "_xs"))],
             ["train_avg", "test_avg", "train_xs", "test_xs"]),
-            width="stretch", height=520)
+            width="stretch", height=520,
+            on_select="rerun", selection_mode="single-row",
+            key="finder_table")
         robust = res[(res.test_xs > 0) & (res.test_n >= 20)]
-        st.caption(f"'_xs' = avg return per trade minus the equal-weight "
+        st.caption(f"CLICK A ROW to load it into the Strategy backtest tab. "
+                   f"'_xs' = avg return per trade minus the equal-weight "
                    f"market's return over the same holding span — the "
                    f"buy-and-hold honesty check. {len(robust)} of {len(res)} "
                    f"configs also beat the market out-of-sample with >=20 "
                    f"test trades. Click a column header to re-sort.")
+
+        # Row click -> hand the full config to the Strategy backtest tab.
+        sel_rows = event.selection.rows if event and event.selection else []
+        if sel_rows:
+            ridx = sel_rows[0]
+            if st.session_state.get("finder_applied_row") != ridx:
+                st.session_state["finder_applied_row"] = ridx
+                row = res.iloc[ridx]
+                row_iv = row.get("interval", interval)
+                fcol = None if row["filter"] == "-" else row["filter"]
+                st.session_state["bt_pending"] = {
+                    "interval": row_iv,
+                    "entry": list(row["entry_cols"]),
+                    "exit": EXIT_OPTIONS[row["exit"]],
+                    "min_count": int(row["min_count"]),
+                    "window": int(row["window"]),
+                    "stop": float(row["stop_value"] * 100)
+                            if row["stop_value"] else 0.0,
+                    "hold": int(row["max_hold"]),
+                    "filter": fcol or "none",
+                    "label": f"#{ridx + 1} [{row_iv}] {row['entry']} | "
+                             f"{row['filter']} | exit {row['exit']}, "
+                             f"stop {row['stop']}, hold {row['max_hold']}",
+                }
+                st.rerun()
+            st.success(f"Row #{ridx + 1} is loaded in the Strategy backtest "
+                       f"tab — open it to run or tweak.")
+        else:
+            st.session_state.pop("finder_applied_row", None)
 
         # ── drill-down: where does a config actually work? ────────────────
         with st.expander("Drill into a configuration (per-symbol results, "
