@@ -14,7 +14,7 @@ study       : per-signal event study + simple long-only strategy simulator
 
 from . import core, wavetrend, weiswave, divergence, signals, study
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 __all__ = ["core", "wavetrend", "weiswave", "divergence", "signals", "study",
            "__version__"]

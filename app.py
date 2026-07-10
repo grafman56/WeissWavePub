@@ -17,6 +17,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from weisswave.autopsy import (condition_lift, numeric_splits, symbol_drag,
+                               trade_context)
 from weisswave.db import DB_PATH, connect, coverage_report, list_symbols, load_prices
 from weisswave.fills import verification_summary, verify_trades
 from weisswave.optimize import (EXIT_OPTIONS, benchmark_index,
@@ -105,15 +107,24 @@ with st.sidebar:
     symbols = tuple(chosen or all_symbols)
 
     st.subheader("Period")
-    picked = st.date_input(
-        "Date range (applies to every tab)",
-        (date.today() - timedelta(days=730), date.today()),
-        min_value=date(1990, 1, 1), max_value=date.today())
-    if isinstance(picked, tuple) and len(picked) == 2:
-        start_date, end_date = picked
-    else:   # mid-selection: only one endpoint picked so far
-        start_date = picked[0] if isinstance(picked, tuple) else picked
+    RANGE_PRESETS = {"3 months": 91, "6 months": 182, "1 year": 365,
+                     "2 years": 730, "5 years": 1826, "10 years": 3652,
+                     "Max (25 years)": 9131, "Custom": None}
+    range_pick = st.selectbox("Quick range (applies to every tab)",
+                              list(RANGE_PRESETS), index=3)
+    if RANGE_PRESETS[range_pick] is not None:
         end_date = date.today()
+        start_date = end_date - timedelta(days=RANGE_PRESETS[range_pick])
+    else:
+        picked = st.date_input(
+            "Custom date range",
+            (date.today() - timedelta(days=730), date.today()),
+            min_value=date(1990, 1, 1), max_value=date.today())
+        if isinstance(picked, tuple) and len(picked) == 2:
+            start_date, end_date = picked
+        else:   # mid-selection: only one endpoint picked so far
+            start_date = picked[0] if isinstance(picked, tuple) else picked
+            end_date = date.today()
     st.caption(f"{start_date} to {end_date}")
 
     st.subheader("WaveTrend")
@@ -137,6 +148,22 @@ params = dict(wt_channel=int(wt_channel), wt_average=int(wt_average),
               very_heavy_mult=float(very_heavy_mult),
               heavy_mult=float(heavy_mult),
               confirm_window=int(confirm_window))
+
+with st.expander("How to use WeissWave (quick guide)"):
+    st.markdown(
+        "1. **Database** — fetch/refresh market data (seconds after the "
+        "first run; do this daily).\n"
+        "2. Pick **timeframe, symbols, and period** in the sidebar — they "
+        "apply to every tab. Fewer symbols / shorter periods compute "
+        "faster.\n"
+        "3. **Strategy finder** — automated search over the whole signal "
+        "suite. Click a result row to load it into the backtester.\n"
+        "4. **Strategy backtest** — tweak and re-run, compare against buy "
+        "& hold, run the **loss autopsy** to see which entry conditions "
+        "separate winners from losers, and **verify fills** against real "
+        "intraday bars.\n"
+        "5. **Today's signals** — screen the universe with the strategy "
+        "you settled on for live entries.")
 
 tab_db, tab_chart, tab_study, tab_finder, tab_bt, tab_today = st.tabs(
     ["Database", "Chart explorer", "Event study", "Strategy finder",
@@ -324,8 +351,12 @@ with tab_bt:
                 "market_window": bench.iloc[-1] / bench.iloc[0] - 1,
                 "interval": interval,
                 "stop_pct": float(stop_pct),
+                # frame args, so autopsy/verify can reload the same universe
+                "symbols": symbols, "params": params,
+                "start": start_date, "end": end_date,
             }
             st.session_state.pop("bt_verify", None)
+            st.session_state.pop("bt_autopsy", None)
 
     if "bt_result" in st.session_state:
         res_bt = st.session_state["bt_result"]
@@ -414,6 +445,83 @@ with tab_bt:
                      width="stretch", height=400,
                      on_select="rerun", selection_mode="single-row",
                      key="bt_trades_table")
+
+        # ── loss autopsy ──────────────────────────────────────────────────
+        with st.expander("Loss autopsy — why did the losers lose?"):
+            st.caption(
+                "Evaluates every candidate condition at the ENTRY bar across "
+                "the trades above in one pass — no re-running per filter. "
+                "Positive lift = trades entered with the condition TRUE did "
+                "better; a big positive lift on a filter you didn't use "
+                "means adding it would likely have culled losers. Confirm "
+                "any finding by setting that regime filter and re-running.")
+            if st.button("Analyze losers"):
+                frames = get_universe_signals(
+                    res_bt.get("interval", interval),
+                    res_bt.get("symbols", symbols),
+                    res_bt.get("params", params),
+                    res_bt.get("start", start_date),
+                    res_bt.get("end", end_date), db_stamp())
+                st.session_state["bt_autopsy"] = trade_context(frames, trades)
+            if "bt_autopsy" in st.session_state:
+                ctx = st.session_state["bt_autopsy"]
+                losers = ctx[~ctx["win"]]
+                winners = ctx[ctx["win"]]
+                a = st.columns(4)
+                a[0].metric("Losing trades", f"{len(losers)} / {len(ctx)}")
+                a[1].metric("Avg loss", f"{losers['ret'].mean():.2%}"
+                            if len(losers) else "-")
+                a[2].metric("Losers where market also fell",
+                            f"{(losers['market_ret'] < 0).mean():.0%}"
+                            if len(losers) else "-",
+                            help="High = losses came with a falling market "
+                                 "(beta risk); low = stock-specific losses "
+                                 "the entry logic should have avoided.")
+                a[3].metric("Bars held: losers vs winners",
+                            f"{losers['bars'].mean():.0f} vs "
+                            f"{winners['bars'].mean():.0f}"
+                            if len(losers) and len(winners) else "-")
+                if len(losers):
+                    st.write("Losses by exit reason:")
+                    st.dataframe(losers.groupby("exit_reason")["ret"]
+                                 .agg(n="count", avg="mean", total="sum")
+                                 .style.format({"avg": "{:.2%}",
+                                                "total": "{:.1%}"}),
+                                 width="stretch")
+
+                lift = condition_lift(ctx)
+                if len(lift):
+                    st.write("**Entry conditions that separate winners from "
+                             "losers** (avg return with condition TRUE vs "
+                             "FALSE at entry):")
+                    st.dataframe(
+                        lift.style.format(
+                            {"win_true": "{:.0%}", "avg_true": "{:.2%}",
+                             "win_false": "{:.0%}", "avg_false": "{:.2%}",
+                             "avg_lift": "{:+.2%}"})
+                        .map(lambda v: "color: #2e7d32" if isinstance(v, float)
+                             and v > 0 else "color: #c62828"
+                             if isinstance(v, float) and v < 0 else "",
+                             subset=["avg_lift"]),
+                        width="stretch", hide_index=True)
+                splits = numeric_splits(ctx)
+                if len(splits):
+                    st.write("**Numeric context at entry** (median split — "
+                             "e.g. does entering deeper oversold, or with a "
+                             "stronger volume ratio, do better?):")
+                    st.dataframe(
+                        splits.style.format(
+                            {"median": "{:.2f}", "win_above": "{:.0%}",
+                             "avg_above": "{:.2%}", "win_below": "{:.0%}",
+                             "avg_below": "{:.2%}", "avg_lift_above": "{:+.2%}"}),
+                        width="stretch", hide_index=True)
+                drag = symbol_drag(ctx)
+                if len(drag):
+                    st.write("**Symbols dragging the strategy down** "
+                             "(worst total contribution):")
+                    st.dataframe(drag.style.format(
+                        {"win_rate": "{:.0%}", "avg_ret": "{:.2%}",
+                         "total_ret": "{:.1%}"}), width="stretch")
 
         # ── fine-resolution fill verification ────────────────────────────
         st.subheader("Fine-resolution fill check")

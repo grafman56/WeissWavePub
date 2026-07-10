@@ -3,6 +3,18 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.4.0 — 2026-07-10
+
+- **Loss autopsy** (`weisswave/autopsy.py` + backtest-tab expander): one
+  pass over a backtest's trades evaluates every candidate condition at
+  the entry bar — regime filters, pressure states, WT zones, plus
+  median splits on WaveTrend level / volume ratio / distance from 50MA —
+  and reports the win-rate/return lift of each, losses by exit reason,
+  market-driven vs stock-specific losses, and worst-dragging symbols.
+- Sidebar quick-range presets (3m/6m/1y/2y/5y/10y/max/custom) replace
+  manual date typing.
+- "How to use" quick guide expander above the tabs.
+
 ## 0.3.2 — 2026-07-10
 
 - Backtest chart: click a trade in the Trades table to highlight it as a
