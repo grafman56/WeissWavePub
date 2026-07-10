@@ -13,33 +13,39 @@ Duplicate-safe by construction:
     for exactly that reason: the most recent bars are the least trustworthy
 
 Usage:
-    python fetch_data.py                 # full S&P 500, incremental
-    python fetch_data.py AAPL MSFT       # subset
-    python fetch_data.py --full          # ignore stored data, refetch lookbacks
-    python fetch_data.py --report        # show DB coverage and exit
+    python fetch_data.py                    # full S&P 500, incremental
+    python fetch_data.py AAPL MSFT          # subset
+    python fetch_data.py --full             # ignore stored data, refetch lookbacks
+    python fetch_data.py --report           # show DB coverage and exit
+    python fetch_data.py --intervals=1d,1h  # only these intervals
 """
 
 import io
 import sys
 import time
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 
 import pandas as pd
 import requests
-from yahooquery import Ticker
 
 from weisswave.db import (connect, coverage_report, first_timestamps,
                           last_timestamps, upsert_prices)
+from weisswave.provider import get_provider
 
 SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-CHUNK_SIZE = 150          # symbols per batched yahooquery request
+CHUNK_SIZE = 150          # symbols per batched provider request
 
 # interval -> (full-history lookback, incremental overlap re-fetched each run)
 # Daily: effectively "everything Yahoo has" for most large caps.
-# Hourly: Yahoo only serves ~730 days of 1h bars; stay under that.
+# Intraday lookbacks sit just inside Yahoo's serving limits (1h ~730d,
+# 15m/5m ~60d, 1m ~7d). The fine intervals exist for fill verification:
+# replaying coarse-timeframe trades against what actually happened intrabar.
 INTERVALS = {
     "1d": (timedelta(days=365 * 25), timedelta(days=5)),
     "1h": (timedelta(days=365), timedelta(days=2)),
+    "15m": (timedelta(days=55), timedelta(days=2)),
+    "5m": (timedelta(days=55), timedelta(days=1)),
+    "1m": (timedelta(days=6), timedelta(days=1)),
 }
 
 # If a symbol's stored history starts this much later than the configured
@@ -58,60 +64,13 @@ def get_sp500_tickers() -> list:
     return sorted(df["Symbol"].str.replace(".", "-", regex=False).tolist())
 
 
-def normalize_history(raw: pd.DataFrame, interval: str) -> pd.DataFrame:
-    """yahooquery history -> rows ready for db.upsert_prices.
-
-    Timestamp rules (the crux of dedup for time-sensitive data):
-      daily+   : ts = midnight of the trading date. Completed bars arrive as
-                 dates; the live session bar arrives as a datetime in
-                 exchange-local time — both map to the same trading date,
-                 i.e. the same primary key.
-      intraday : ts = bar start converted to UTC (tz-aware input), or
-                 localized from America/New_York if Yahoo returns naive
-                 exchange-local times (fine for an all-US universe).
-    """
-    df = raw.reset_index()
-    df = df.rename(columns={"date": "ts", "index": "ts"})
-    daily = interval.endswith(("d", "wk", "mo"))
-
-    def _norm(v):
-        if isinstance(v, datetime):          # includes pd.Timestamp
-            t = pd.Timestamp(v)
-            if daily:
-                return pd.Timestamp(t.date())          # date in its own tz
-            if t.tzinfo is None:
-                t = t.tz_localize("America/New_York")
-            return t.tz_convert("UTC").tz_localize(None)
-        if isinstance(v, date):
-            return pd.Timestamp(v)
-        return pd.NaT
-
-    df["ts"] = df["ts"].map(_norm)
-    df["interval"] = interval
-    if "adjclose" not in df.columns:
-        df["adjclose"] = df.get("close")
-    keep = ["symbol", "interval", "ts", "open", "high", "low",
-            "close", "volume", "adjclose"]
-    df = df[[c for c in keep if c in df.columns]]
-    df = df.dropna(subset=["ts", "close"])
-    # a chunk can still contain the same key twice (rare Yahoo glitch):
-    # keep the last occurrence rather than letting the upsert order decide
-    return df.drop_duplicates(subset=["symbol", "interval", "ts"], keep="last")
-
-
-def fetch_chunk(symbols: list, start: datetime, interval: str) -> pd.DataFrame | None:
-    """One batched yahooquery call; returns None when nothing came back."""
-    t = Ticker(symbols, asynchronous=True, max_workers=8)
-    raw = t.history(start=start.strftime("%Y-%m-%d"), interval=interval)
-    if not isinstance(raw, pd.DataFrame) or raw.empty:
-        return None
-    return normalize_history(raw, interval)
-
-
-def run(symbols: list, full: bool = False):
+def run(symbols: list, full: bool = False, intervals=None):
+    provider = get_provider()
     con = connect()
     t0 = time.time()
     for interval, (lookback, overlap) in INTERVALS.items():
+        if intervals and interval not in intervals:
+            continue
         now = datetime.now()
         default_start = now - lookback
         known = {} if full else last_timestamps(con, interval)
@@ -134,24 +93,34 @@ def run(symbols: list, full: bool = False):
             batches.append((old_syms, start, "incremental"))
 
         total, failed = 0, []
+
+        def fetch_split(chunk, start, label):
+            """Fetch a chunk; on provider error, bisect until the poison
+            symbol(s) are isolated instead of losing the whole chunk."""
+            nonlocal total
+            try:
+                rows = provider.history(chunk, start, interval)
+            except Exception as e:
+                if len(chunk) <= 4:
+                    failed.extend(chunk)
+                    print(f"  [{interval}] {label} {chunk} FAILED: {e}")
+                    return
+                mid = len(chunk) // 2
+                fetch_split(chunk[:mid], start, label)
+                fetch_split(chunk[mid:], start, label)
+                return
+            if rows is None:
+                failed.extend(chunk)
+                return
+            n = upsert_prices(con, rows)
+            failed.extend(sorted(set(chunk) - set(rows["symbol"])))
+            total += n
+            print(f"  [{interval}] {label}: {rows['symbol'].nunique()}"
+                  f"/{len(chunk)} symbols, {n} rows upserted")
+
         for syms, start, label in batches:
             for i in range(0, len(syms), CHUNK_SIZE):
-                chunk = syms[i:i + CHUNK_SIZE]
-                try:
-                    rows = fetch_chunk(chunk, start, interval)
-                except Exception as e:
-                    failed.extend(chunk)
-                    print(f"  [{interval}] chunk {i // CHUNK_SIZE + 1} FAILED: {e}")
-                    continue
-                if rows is None:
-                    failed.extend(chunk)
-                    continue
-                n = upsert_prices(con, rows)
-                got = rows["symbol"].nunique()
-                failed.extend(sorted(set(chunk) - set(rows["symbol"])))
-                total += n
-                print(f"  [{interval}] {label} chunk {i // CHUNK_SIZE + 1}: "
-                      f"{got}/{len(chunk)} symbols, {n} rows upserted")
+                fetch_split(syms[i:i + CHUNK_SIZE], start, label)
         print(f"[{interval}] done - {total} rows upserted"
               + (f", no data for: {sorted(set(failed))}" if failed else ""))
 
@@ -169,12 +138,17 @@ def main():
         con.close()
         return
     full = "--full" in args
+    intervals = None
+    for a in args:
+        if a.startswith("--intervals="):
+            intervals = [x.strip() for x in a.split("=", 1)[1].split(",")]
     symbols = [a.upper() for a in args if not a.startswith("--")]
     if not symbols:
         print("Fetching S&P 500 constituent list...")
         symbols = get_sp500_tickers()
-    print(f"{len(symbols)} symbols, mode={'full' if full else 'incremental'}")
-    run(symbols, full=full)
+    print(f"{len(symbols)} symbols, mode={'full' if full else 'incremental'}"
+          + (f", intervals={intervals}" if intervals else ""))
+    run(symbols, full=full, intervals=intervals)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@ weisswave/
   signals.py     build_signals(): one ticker OHLCV -> boolean signal table
   optimize.py    two-stage automated strategy search + per-symbol drilldown
   study.py       event_study() per-signal edge; backtest_long() simulator
+  fills.py       fine-resolution fill verification against real intraday bars
+  provider.py    data-source abstraction (Yahoo today; Polygon/Alpaca later)
   db.py          DuckDB storage: upsert_prices/load_prices/coverage_report
 fetch_data.py    incremental S&P 500 fetcher -> market.duckdb
 run_study.py     CLI: event study + example strategy (DB or CSV source)
@@ -49,8 +51,18 @@ composite confirmation window. Tabs:
   honesty check. A drill-down expander shows per-symbol results for any
   config and exports it as a bot-ready JSON strategy file.
 - **Strategy backtest** — pick entry/exit signal combos, require N-signal
-  confluence within a window, stop-loss and max-hold; trade stats,
-  strategy-vs-market curve, exit-reason breakdown, trade list
+  confluence within a window, regime filter, stop-loss and max-hold;
+  trade stats, strategy-vs-market curve, exit-reason breakdown, trade
+  list. Finder results load in with one click ("Load into Strategy
+  backtest tab" in the finder drill-down).
+- **Fine-resolution fill check** (inside the backtest tab) — replays
+  every trade against REAL 15m/5m/1m bars stored in the DB (no simulated
+  intrabar paths): entry/exit fills and stop touches re-derived from the
+  fine bars and compared against the coarse model, with per-trade
+  discrepancy tables, an overall bias number, and a trade inspector
+  chart showing the fine bars around any trade with modeled vs verified
+  fills marked. Yahoo intraday limits: 15m/5m ~55 days, 1m ~7 days —
+  older trades report as unverifiable rather than guessed at.
 - **Today's signals** — entry screener with named strategy presets
   (textbook: MACD cross, golden cross, RSI bounce; plus the WeissWave
   suite when present), manual rules, or loaded finder results

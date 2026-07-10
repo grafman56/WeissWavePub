@@ -18,6 +18,7 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from weisswave.db import DB_PATH, connect, coverage_report, list_symbols, load_prices
+from weisswave.fills import verification_summary, verify_trades
 from weisswave.optimize import (EXIT_OPTIONS, benchmark_index,
                                 evaluate_config, find_strategies,
                                 per_symbol_stats)
@@ -78,9 +79,23 @@ def get_universe_signals(interval: str, symbols: tuple, params: dict,
 
 from datetime import date, timedelta
 
+# Config handed off from the strategy finder — applied before ANY widget
+# renders so it can set the sidebar timeframe and the backtest controls.
+if "bt_pending" in st.session_state:
+    _cfg = st.session_state.pop("bt_pending")
+    st.session_state.update({
+        "interval": _cfg["interval"],
+        "bt_entry": _cfg["entry"], "bt_exit": _cfg["exit"],
+        "bt_mc": _cfg["min_count"], "bt_win": _cfg["window"],
+        "bt_stop": _cfg["stop"], "bt_hold": _cfg["hold"],
+        "bt_filter": _cfg["filter"],
+        "bt_loaded_label": _cfg["label"]})
+    st.session_state.pop("bt_result", None)
+
 with st.sidebar:
     st.title("WeissWave")
-    interval = st.radio("Timeframe", ["1d", "1h"], horizontal=True)
+    interval = st.radio("Timeframe", ["1d", "1h"], horizontal=True,
+                        key="interval")
     all_symbols = get_symbols(interval, db_stamp())
     st.caption(f"{len(all_symbols)} symbols in DB for {interval}")
     chosen = st.multiselect("Symbols (empty = all)", all_symbols)
@@ -246,19 +261,31 @@ with tab_study:
 with tab_bt:
     st.caption("Entry fires when at least one selected entry signal fires AND "
                "the required number of distinct entry signals have fired within "
-               "the confluence window. Exits on any selected exit signal, the "
-               "stop, or max holding time. Fills at next bar's open.")
-    c1, c2 = st.columns(2)
+               "the confluence window, gated by the regime filter. Exits on any "
+               "selected exit signal, the stop, or max holding time. Fills at "
+               "next bar's open.")
+    if st.session_state.get("bt_loaded_label"):
+        st.info(f"Loaded from finder: {st.session_state['bt_loaded_label']}")
+    st.session_state.setdefault("bt_entry", ["wt_cross_up_oversold"])
+    st.session_state.setdefault("bt_exit", ["wt_cross_down_overbought"])
+    st.session_state.setdefault("bt_filter", "none")
+
+    c1, c2, c3 = st.columns([3, 3, 2])
     entry_cols = c1.multiselect("Entry signals (bull)", SIGNAL_COLUMNS_BULL,
-                                default=["wt_cross_up_oversold"])
+                                key="bt_entry")
     exit_cols = c2.multiselect("Exit signals (bear)", SIGNAL_COLUMNS_BEAR,
-                               default=["wt_cross_down_overbought"])
-    c3, c4, c5, c6 = st.columns(4)
-    min_count = c3.number_input("Min entry signals in confluence", 1,
-                                max(1, len(entry_cols)), 1)
-    conf_win = c4.number_input("Confluence window (bars)", 0, 30, 5)
-    stop_pct = c5.number_input("Stop loss %", 0.0, 50.0, 8.0, 0.5)
-    max_bars = c6.number_input("Max holding (bars, 0 = none)", 0, 250, 20)
+                               key="bt_exit")
+    bt_filter = c3.selectbox("Regime filter", ["none"] + FILTER_COLUMNS,
+                             key="bt_filter")
+    c4, c5, c6, c7 = st.columns(4)
+    min_count = c4.number_input("Min entry signals in confluence", 1,
+                                max(1, len(entry_cols)), key="bt_mc")
+    conf_win = c5.number_input("Confluence window (bars)", 0, 30, 5,
+                               key="bt_win")
+    stop_pct = c6.number_input("Stop loss %", 0.0, 50.0, 8.0, 0.5,
+                               key="bt_stop")
+    max_bars = c7.number_input("Max holding (bars, 0 = none)", 0, 250, 20,
+                               key="bt_hold")
 
     if st.button("Run backtest", type="primary", disabled=not entry_cols):
         frames = get_universe_signals(interval, symbols, params, start_date,
@@ -266,6 +293,8 @@ with tab_bt:
         all_trades = []
         for s, sig in frames.items():
             entry = combine_signals(sig, entry_cols, int(min_count), int(conf_win))
+            if bt_filter != "none":
+                entry = entry & sig[bt_filter].astype(bool)
             exit_ = (sig[exit_cols].any(axis=1) if exit_cols
                      else pd.Series(False, index=sig.index))
             res = backtest_long(sig, entry, exit_,
@@ -275,6 +304,7 @@ with tab_bt:
                 res.trades["symbol"] = s
                 all_trades.append(res.trades)
         if not all_trades:
+            st.session_state.pop("bt_result", None)
             st.warning("No trades triggered with these settings.")
         else:
             trades = pd.concat(all_trades, ignore_index=True) \
@@ -286,63 +316,168 @@ with tab_bt:
             b_exit = bench.reindex(trades["exit_idx"], method="ffill").to_numpy()
             trades["market_ret"] = b_exit / b_entry - 1
             trades["excess"] = trades["ret"] - trades["market_ret"]
-            market_window = bench.iloc[-1] / bench.iloc[0] - 1
+            st.session_state["bt_result"] = {
+                "trades": trades,
+                "market_window": bench.iloc[-1] / bench.iloc[0] - 1,
+                "interval": interval,
+                "stop_pct": float(stop_pct),
+            }
+            st.session_state.pop("bt_verify", None)
 
-            wins = trades.loc[trades.ret > 0, "ret"].sum()
-            losses = -trades.loc[trades.ret < 0, "ret"].sum()
+    if "bt_result" in st.session_state:
+        res_bt = st.session_state["bt_result"]
+        trades = res_bt["trades"]
+        market_window = res_bt["market_window"]
+        wins = trades.loc[trades.ret > 0, "ret"].sum()
+        losses = -trades.loc[trades.ret < 0, "ret"].sum()
+        m = st.columns(4)
+        m[0].metric("Trades", len(trades))
+        m[1].metric("Win rate", f"{(trades.ret > 0).mean():.1%}")
+        m[2].metric("Avg return / trade", f"{trades.ret.mean():.2%}")
+        m[3].metric("Profit factor",
+                    f"{wins / losses:.2f}" if losses > 0 else "inf")
+        m = st.columns(4)
+        m[0].metric("Avg excess vs market / trade",
+                    f"{trades.excess.mean():+.2%}",
+                    help="Trade return minus the equal-weight market's "
+                         "return over the same holding span. Negative "
+                         "means buy-and-hold did the job better.")
+        m[1].metric("Beat-market rate", f"{(trades.excess > 0).mean():.1%}")
+        m[2].metric("Market buy & hold (window)", f"{market_window:+.1%}")
+        m[3].metric("Avg bars held", f"{trades.bars.mean():.1f}")
+        if trades.excess.mean() <= 0:
+            st.warning("This configuration did NOT beat buy-and-hold "
+                       "over the same holding periods — the market did "
+                       "the work, not the strategy.")
+
+        # Trades from different symbols overlap in time, so compounding
+        # them sequentially would be meaningless; sum fixed-stake returns.
+        # The benchmark line sums the MARKET's return over the same trade
+        # spans — same scale, so the gap between lines is the cumulative
+        # excess the strategy actually added.
+        by_exit = trades.set_index("exit_idx")
+        eq = by_exit["ret"].cumsum() * 100
+        mkt = by_exit["market_ret"].cumsum() * 100
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=eq.index, y=eq, mode="lines",
+                                 name="strategy trades"))
+        fig.add_trace(go.Scatter(x=mkt.index, y=mkt, mode="lines",
+                                 name="market over same trade spans",
+                                 line=dict(dash="dot")))
+        fig.update_layout(title="Cumulative per-trade return vs the market "
+                                "over the same holding spans (1-unit stake)",
+                          yaxis_ticksuffix="%",
+                          height=350, margin=dict(t=40, b=20),
+                          legend=dict(orientation="h", y=1.12))
+        st.plotly_chart(fig, width="stretch")
+
+        st.subheader("Exit reasons")
+        st.dataframe(trades.groupby("exit_reason")["ret"]
+                     .agg(n="count", avg="mean", win_rate=lambda r: (r > 0).mean())
+                     .style.format({"avg": "{:.2%}", "win_rate": "{:.1%}"}),
+                     width="stretch")
+        st.subheader("Trades")
+        st.dataframe(trades[["symbol", "entry_idx", "exit_idx", "entry_px",
+                             "exit_px", "ret", "bars", "exit_reason"]]
+                     .style.format({"entry_px": "{:.2f}", "exit_px": "{:.2f}",
+                                    "ret": "{:.2%}"}),
+                     width="stretch", height=400)
+
+        # ── fine-resolution fill verification ────────────────────────────
+        st.subheader("Fine-resolution fill check")
+        st.caption("Replays every trade against REAL finer bars stored in the "
+                   "database — no simulated intrabar paths. Entry/exit fills "
+                   "and stop touches are re-derived from the fine bars and "
+                   "compared to what the coarse backtest assumed. Yahoo "
+                   "coverage: 15m/5m ~55 days back, 1m ~7 days — older trades "
+                   "report 'no_data'.")
+        v1, v2 = st.columns([1, 3])
+        fine_iv = v1.selectbox("Fine interval", ["15m", "5m", "1m"],
+                               key="bt_fine_iv")
+        if v1.button("Verify fills"):
+            con = connect(read_only=True)
+            with st.spinner("Replaying trades against fine bars..."):
+                ver = verify_trades(con, trades, res_bt["interval"], fine_iv,
+                                    stop_loss=(res_bt["stop_pct"] / 100
+                                               if res_bt["stop_pct"] else None))
+            con.close()
+            st.session_state["bt_verify"] = {"ver": ver, "fine_iv": fine_iv}
+
+        if "bt_verify" in st.session_state:
+            ver = st.session_state["bt_verify"]["ver"]
+            ver_iv = st.session_state["bt_verify"]["fine_iv"]
+            summ = verification_summary(ver)
+            ok = ver[ver["v_status"] == "ok"]
             m = st.columns(4)
-            m[0].metric("Trades", len(trades))
-            m[1].metric("Win rate", f"{(trades.ret > 0).mean():.1%}")
-            m[2].metric("Avg return / trade", f"{trades.ret.mean():.2%}")
-            m[3].metric("Profit factor",
-                        f"{wins / losses:.2f}" if losses > 0 else "inf")
-            m = st.columns(4)
-            m[0].metric("Avg excess vs market / trade",
-                        f"{trades.excess.mean():+.2%}",
-                        help="Trade return minus the equal-weight market's "
-                             "return over the same holding span. Negative "
-                             "means buy-and-hold did the job better.")
-            m[1].metric("Beat-market rate",
-                        f"{(trades.excess > 0).mean():.1%}")
-            m[2].metric("Market buy & hold (window)", f"{market_window:+.1%}")
-            m[3].metric("Avg bars held", f"{trades.bars.mean():.1f}")
-            if trades.excess.mean() <= 0:
-                st.warning("This configuration did NOT beat buy-and-hold "
-                           "over the same holding periods — the market did "
-                           "the work, not the strategy.")
+            m[0].metric("Verifiable trades",
+                        f"{summ['n_verified']} / {summ['n_trades']}",
+                        help="Trades whose whole span is covered by stored "
+                             "fine bars.")
+            if summ["n_verified"]:
+                m[1].metric("Modeled avg (verifiable)",
+                            f"{summ['modeled_avg']:+.2%}")
+                m[2].metric("Verified avg", f"{summ['verified_avg']:+.2%}")
+                m[3].metric("Bias (verified - modeled)",
+                            f"{summ['bias']:+.3%}",
+                            help="Positive: the coarse backtest UNDERSTATED "
+                                 "results; negative: it flattered them.")
+                if summ["n_changed_exit"]:
+                    st.error(f"{summ['n_changed_exit']} trade(s) had a "
+                             f"DIFFERENT outcome at {ver_iv} resolution "
+                             f"(stop touched before the modeled exit, or a "
+                             f"modeled stop never actually touched).")
+                diffs = ok[ok["v_delta"].abs() > 0]
+                if len(diffs):
+                    st.write("Trades whose verified fills differ from the model:")
+                    st.dataframe(
+                        diffs.reindex(diffs["v_delta"].abs()
+                                      .sort_values(ascending=False).index)
+                        [["symbol", "entry_idx", "exit_reason", "ret", "v_ret",
+                          "v_delta", "v_note"]].head(20)
+                        .style.format({"ret": "{:.2%}", "v_ret": "{:.2%}",
+                                       "v_delta": "{:+.3%}"}),
+                        width="stretch")
+                else:
+                    st.success("Every verifiable fill matched the coarse "
+                               "model exactly at this resolution.")
 
-            # Trades from different symbols overlap in time, so compounding
-            # them sequentially would be meaningless; sum fixed-stake returns.
-            # The benchmark line sums the MARKET's return over the same trade
-            # spans — same scale, so the gap between lines is the cumulative
-            # excess the strategy actually added.
-            by_exit = trades.set_index("exit_idx")
-            eq = by_exit["ret"].cumsum() * 100
-            mkt = by_exit["market_ret"].cumsum() * 100
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=eq.index, y=eq, mode="lines",
-                                     name="strategy trades"))
-            fig.add_trace(go.Scatter(x=mkt.index, y=mkt, mode="lines",
-                                     name="market over same trade spans",
-                                     line=dict(dash="dot")))
-            fig.update_layout(title="Cumulative per-trade return vs the market "
-                                    "over the same holding spans (1-unit stake)",
-                              yaxis_ticksuffix="%",
-                              height=350, margin=dict(t=40, b=20),
-                              legend=dict(orientation="h", y=1.12))
-            st.plotly_chart(fig, width="stretch")
-
-            st.subheader("Exit reasons")
-            st.dataframe(trades.groupby("exit_reason")["ret"]
-                         .agg(n="count", avg="mean", win_rate=lambda r: (r > 0).mean())
-                         .style.format({"avg": "{:.2%}", "win_rate": "{:.1%}"}),
-                         width="stretch")
-            st.subheader("Trades")
-            st.dataframe(trades[["symbol", "entry_idx", "exit_idx", "entry_px",
-                                 "exit_px", "ret", "bars", "exit_reason"]]
-                         .style.format({"entry_px": "{:.2f}", "exit_px": "{:.2f}",
-                                        "ret": "{:.2%}"}),
-                         width="stretch", height=400)
+                # ── trade inspector: see what actually happened ──────────
+                st.markdown("**Trade inspector** — fine bars around one trade")
+                labels = [f"{t.symbol}  {t.entry_idx} -> {t.exit_idx}  "
+                          f"({t.exit_reason}, {t.ret:+.2%})"
+                          for t in ok.itertuples()]
+                pick_t = st.selectbox("Trade", labels, key="bt_inspect")
+                t = ok.iloc[labels.index(pick_t)]
+                pad = pd.Timedelta(days=1)
+                con = connect(read_only=True)
+                fine = load_prices(con, t["symbol"], ver_iv,
+                                   t["entry_idx"] - pad, t["exit_idx"] + pad)
+                con.close()
+                figt = go.Figure(go.Candlestick(
+                    x=fine.index, open=fine["Open"], high=fine["High"],
+                    low=fine["Low"], close=fine["Close"], name=ver_iv,
+                    showlegend=False))
+                figt.add_trace(go.Scatter(
+                    x=[t["entry_idx"]], y=[t["entry_px"]], mode="markers",
+                    name="entry fill", marker=dict(symbol="triangle-up",
+                                                   size=14, color="lime")))
+                figt.add_trace(go.Scatter(
+                    x=[t["exit_idx"]], y=[t["exit_px"]], mode="markers",
+                    name="modeled exit", marker=dict(symbol="x", size=12,
+                                                     color="orange")))
+                figt.add_trace(go.Scatter(
+                    x=[t["v_exit_ts"]], y=[t["v_exit_px"]], mode="markers",
+                    name="verified exit", marker=dict(symbol="triangle-down",
+                                                      size=14, color="red")))
+                if res_bt["stop_pct"]:
+                    figt.add_hline(y=t["v_entry_px"]
+                                   * (1 - res_bt["stop_pct"] / 100),
+                                   line_dash="dot", line_color="red",
+                                   annotation_text="stop")
+                figt.update_layout(height=450, xaxis_rangeslider_visible=False,
+                                   margin=dict(t=30, b=20),
+                                   legend=dict(orientation="h", y=1.08))
+                st.plotly_chart(figt, width="stretch")
 
 
 # ── tab 5: strategy finder (automated search) ─────────────────────────────────
@@ -502,7 +637,22 @@ with tab_finder:
                              "avg_return": round(float(row["test_avg"]), 5)
                              if pd.notna(row["test_avg"]) else None}},
             }
-            st.download_button("Download bot config (JSON)",
+            h1, h2 = st.columns(2)
+            if h1.button("Load into Strategy backtest tab", type="primary"):
+                st.session_state["bt_pending"] = {
+                    "interval": row_iv,
+                    "entry": list(row["entry_cols"]),
+                    "exit": EXIT_OPTIONS[row["exit"]],
+                    "min_count": int(row["min_count"]),
+                    "window": int(row["window"]),
+                    "stop": float(row["stop_value"] * 100)
+                            if row["stop_value"] else 0.0,
+                    "hold": int(row["max_hold"]),
+                    "filter": filter_col or "none",
+                    "label": pick,
+                }
+                st.rerun()
+            h2.download_button("Download bot config (JSON)",
                                json.dumps(bot_config, indent=2),
                                file_name="strategy_config.json",
                                mime="application/json")
