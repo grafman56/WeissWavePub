@@ -1,0 +1,10 @@
+[
+  {
+    "name": "example-wt-confluence",
+    "entry_cols": ["wt_cross_up_oversold", "wt_bull_div"],
+    "min_count": 2,
+    "window": 5,
+    "filter": "in_up_wave",
+    "stop_pct": 0.08
+  }
+]

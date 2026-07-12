@@ -3,6 +3,16 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.5.0 — 2026-07-12
+
+- **Nightly setup scanner** (`scan_today.py`): evaluates strategy
+  configs from a local `strategies.json` (gitignored; see
+  `strategies.example.json`) against the latest bar of every symbol in
+  the DB and reports hits with close, stop level, and per-component
+  fire distances. `--fetch` runs an incremental fetch first,
+  `--lookback=N` widens the reporting window, results are saved as CSV
+  under `scans/`. Built to run post-close from Task Scheduler / cron.
+
 ## 0.4.1 — 2026-07-12
 
 - **Fixed: pivot detection on na-masked series.** Pine's `pivotlow`/

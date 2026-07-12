@@ -5,6 +5,8 @@ weisswave/combined.py
 market.duckdb
 market.duckdb.wal
 finder_results.pkl
+strategies.json
+scans/
 stock_data/
 stock_data_hourly/
 
