@@ -1,5 +1,5 @@
-"""
-WeissWave — Python port of the "WaveTrend with Volume" (WTV) and
+﻿"""
+WeissWave â€” Python port of the "WaveTrend with Volume" (WTV) and
 "Combined v1 Prod" TradingView studies, plus a signal/backtest layer.
 
 Modules
@@ -14,7 +14,7 @@ study       : per-signal event study + simple long-only strategy simulator
 
 from . import core, wavetrend, weiswave, divergence, signals, study
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = ["core", "wavetrend", "weiswave", "divergence", "signals", "study",
            "__version__"]

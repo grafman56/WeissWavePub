@@ -32,6 +32,31 @@ def pine_pivot_high(s: pd.Series, lbL: int, lbR: int) -> pd.Series:
     return ((center > left) & (center > right)).fillna(False)
 
 
+def pine_pivot_low_nan(s: pd.Series, lbL: int, lbR: int) -> pd.Series:
+    """pivotlow() for na-masked series (`cond ? value : na` in Pine).
+
+    Pine's engine compares with Java NaN semantics: any comparison against
+    na is false, so na neighbours can never veto a pivot. The pivot fires
+    when the center bar is non-na and no non-na bar in the window beats it.
+    """
+    center = s.shift(lbR)
+    left = s.shift(lbR + 1).rolling(lbL, min_periods=1).min()
+    right = s.rolling(lbR, min_periods=1).min()
+    left_ok = (center < left) | left.isna()
+    right_ok = (center < right) | right.isna()
+    return (center.notna() & left_ok & right_ok).fillna(False)
+
+
+def pine_pivot_high_nan(s: pd.Series, lbL: int, lbR: int) -> pd.Series:
+    """pivothigh() with Pine's na-tolerant semantics (see pine_pivot_low_nan)."""
+    center = s.shift(lbR)
+    left = s.shift(lbR + 1).rolling(lbL, min_periods=1).max()
+    right = s.rolling(lbR, min_periods=1).max()
+    left_ok = (center > left) | left.isna()
+    right_ok = (center > right) | right.isna()
+    return (center.notna() & left_ok & right_ok).fillna(False)
+
+
 def pine_divergences(osc: pd.Series, high: pd.Series, low: pd.Series,
                      lbL: int, lbR: int, range_lower: int, range_upper: int,
                      prefix: str) -> pd.DataFrame:

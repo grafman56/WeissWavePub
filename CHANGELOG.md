@@ -3,6 +3,18 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.4.1 — 2026-07-12
+
+- **Fixed: pivot detection on na-masked series.** Pine's `pivotlow`/
+  `pivothigh` compare with NaN semantics (a comparison against na is
+  false), so na neighbours can never veto a pivot — while the Python
+  port required a full window of valid bars, meaning any signal built
+  on a masked series (`cond ? value : na`) could never fire. New
+  `pine_pivot_low_nan` / `pine_pivot_high_nan` in
+  `weisswave/divergence.py` implement the faithful semantics; the
+  strict variants are unchanged, so existing divergence signals are
+  unaffected.
+
 ## 0.4.0 — 2026-07-10
 
 - **Loss autopsy** (`weisswave/autopsy.py` + backtest-tab expander): one
