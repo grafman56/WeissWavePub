@@ -15,12 +15,13 @@ Design notes
   always tell how stale a bar is.
 """
 
+import os
 from datetime import datetime, timezone
 
 import duckdb
 import pandas as pd
 
-DB_PATH = "market.duckdb"
+DB_PATH = os.environ.get("WEISSWAVE_DB", "market.duckdb")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS prices (

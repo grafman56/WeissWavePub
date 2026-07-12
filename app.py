@@ -34,6 +34,27 @@ st.set_page_config(page_title="WeissWave", page_icon="chart_with_upwards_trend",
 
 HORIZONS = (1, 3, 5, 10, 20)
 
+STRATEGIES_PATH = "strategies.json"
+
+
+def load_saved_strategies() -> list:
+    """Strategies shared with scan_today.py (and later the trading bot)."""
+    if not os.path.exists(STRATEGIES_PATH):
+        return []
+    try:
+        with open(STRATEGIES_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_strategy(cfg: dict):
+    strategies = [s for s in load_saved_strategies()
+                  if s.get("name") != cfg["name"]]
+    strategies.append(cfg)
+    with open(STRATEGIES_PATH, "w", encoding="utf-8") as f:
+        json.dump(strategies, f, indent=2)
+
 
 # ── data access (cached; invalidated whenever the DB file changes) ────────────
 
@@ -867,13 +888,27 @@ with tab_today:
                "data on the Database tab first; the latest daily bar is "
                "partial if fetched while the market is open.")
     have_finder = "finder_results" in st.session_state
+    saved_strats = load_saved_strategies()
     source = st.radio("Entry rule",
-                      ["Presets", "Manual"] + (["From finder"] if have_finder else []),
+                      ["Presets", "Manual"]
+                      + (["Saved"] if saved_strats else [])
+                      + (["From finder"] if have_finder else []),
                       horizontal=True)
     screen_interval = interval
     if source == "Presets":
         pick = st.selectbox("Strategy", list(PRESET_STRATEGIES))
         entry_cols, min_count, window, filter_col = PRESET_STRATEGIES[pick]
+        st.write(f"Entry: **{' + '.join(entry_cols)}** (>= {min_count} in "
+                 f"{window} bars), filter: **{filter_col or 'none'}**")
+    elif source == "Saved":
+        pick = st.selectbox("Saved strategy (strategies.json — also what "
+                            "scan_today.py runs nightly)",
+                            [s["name"] for s in saved_strats])
+        s_cfg = next(s for s in saved_strats if s["name"] == pick)
+        entry_cols = list(s_cfg["entry_cols"])
+        min_count = int(s_cfg.get("min_count", 1))
+        window = int(s_cfg.get("window", 5))
+        filter_col = s_cfg.get("filter")
         st.write(f"Entry: **{' + '.join(entry_cols)}** (>= {min_count} in "
                  f"{window} bars), filter: **{filter_col or 'none'}**")
     elif source == "From finder":
@@ -903,6 +938,21 @@ with tab_today:
         window = int(s3.number_input("Window", 0, 20, 5, key="today_win"))
         filter_pick = s4.selectbox("Regime filter", ["none"] + FILTER_COLUMNS)
         filter_col = None if filter_pick == "none" else filter_pick
+
+    with st.expander("Save this rule to strategies.json (runs nightly via "
+                     "scan_today.py; later feeds the bot)"):
+        c1, c2 = st.columns([3, 1])
+        s_name = c1.text_input("Name", value="+".join(entry_cols)[:48],
+                               key="save_strat_name")
+        s_stop = c2.number_input("Stop %", 1.0, 25.0, 8.0, step=0.5,
+                                 key="save_strat_stop")
+        if st.button("Save strategy", disabled=not (s_name and entry_cols)):
+            save_strategy({"name": s_name, "entry_cols": list(entry_cols),
+                           "min_count": int(min_count), "window": int(window),
+                           "filter": filter_col,
+                           "stop_pct": round(s_stop / 100, 4)})
+            st.success(f"Saved '{s_name}' to {STRATEGIES_PATH} — the nightly "
+                       f"scanner picks it up on its next run.")
 
     lookback = int(st.number_input("Fired within the last N bars", 1, 10, 2))
     if st.button("Screen universe", type="primary", disabled=not entry_cols):

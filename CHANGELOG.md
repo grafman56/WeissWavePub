@@ -3,6 +3,16 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.5.1 — 2026-07-12
+
+- Today's signals tab: new **Saved** entry-rule source loads strategies
+  from `strategies.json`, and a save panel writes the currently
+  configured rule (any source) back to it — one shared config between
+  the dashboard, the nightly scanner, and future automation.
+- `WEISSWAVE_DB` environment variable overrides the database path
+  (defaults to `market.duckdb` in the working directory as before), so
+  the project relocates without code edits.
+
 ## 0.5.0 — 2026-07-12
 
 - **Nightly setup scanner** (`scan_today.py`): evaluates strategy
