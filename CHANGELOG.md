@@ -3,6 +3,17 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.5.2 — 2026-07-12
+
+- **One-command backtest harness** (`test_strategy.py`): test any entry
+  combo / filter / exit / stop / hold / interval with a single CLI call
+  against the existing database — train/test stats with excess vs the
+  equal-weight benchmark and a plain-language verdict. `--saved=NAME`
+  runs a strategies.json entry; `--list-signals` / `--list-saved` let a
+  script (or LLM orchestrator) discover valid names; unknown columns
+  fail with exit code 2. No fetching or installs — built to be the only
+  command an automation loop needs.
+
 ## 0.5.1 — 2026-07-12
 
 - Today's signals tab: new **Saved** entry-rule source loads strategies
