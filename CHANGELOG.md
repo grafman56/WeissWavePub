@@ -3,6 +3,13 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.6.1 — 2026-07-13
+
+- `portfolio_sim.py` gains `--gate=COL@INTERVAL`: the portfolio-level
+  simulator can now model the core product — a lower-timeframe bot
+  trading only inside a higher-timeframe trend — with the same
+  no-lookahead one-bar shift the harness uses.
+
 ## 0.6.0 — 2026-07-13
 
 - **Alpaca data provider** (`weisswave/provider.py`): SIP-feed historical
