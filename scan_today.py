@@ -88,7 +88,8 @@ def main():
             latest_seen = last_ts
         for strat in strategies:
             entry = combine_signals(sig, strat["entry_cols"],
-                                    strat["min_count"], strat["window"])
+                                    strat["min_count"], strat["window"],
+                                    strat.get("weights"))
             if strat["filter"] and strat["filter"] in sig.columns:
                 entry = entry & sig[strat["filter"]].fillna(False)
             tail = entry.iloc[-lookback:]

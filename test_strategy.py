@@ -161,6 +161,7 @@ def main():
         window = int(cfg.get("window", 5))
         filter_col = cfg.get("filter")
         stop = float(cfg.get("stop_pct", 0.08))
+        weights = cfg.get("weights")
     else:
         positional = [a for a in args if not a.startswith("--")]
         if not positional:
@@ -173,6 +174,9 @@ def main():
         if filter_col in ("none", ""):
             filter_col = None
         stop = float(arg(args, "stop", "0.08"))
+        w_arg = arg(args, "weights", None)      # e.g. tdi_long:2,golden:1
+        weights = ({p.split(":")[0]: int(p.split(":")[1])
+                    for p in w_arg.split(",")} if w_arg else None)
 
     exit_arg = arg(args, "exit", None)
     exit_cols = [] if exit_arg in (None, "none", "") else exit_arg.split(",")
@@ -183,7 +187,8 @@ def main():
     cost = float(arg(args, "cost-bps", "0")) / 10000.0
 
     known = set(SIGNAL_COLUMNS_BULL + SIGNAL_COLUMNS_BEAR + FILTER_COLUMNS)
-    for c in entry_cols + exit_cols + ([filter_col] if filter_col else []):
+    for c in entry_cols + exit_cols + ([filter_col] if filter_col else []) \
+            + list(weights or {}):
         if c not in known:
             fail(f"unknown signal column '{c}' (see --list-signals)")
 
@@ -213,8 +218,11 @@ def main():
         fail(f"no usable {interval} data for the requested symbols")
 
     trades = evaluate_config(frames, entry_cols, min_count, window,
-                             filter_col, exit_cols, stop, hold)
-    lines = [f"strategy: {'+'.join(entry_cols)} (>={min_count} in {window} "
+                             filter_col, exit_cols, stop, hold,
+                             weights=weights)
+    wtxt = ("+".join(f"{c}x{weights.get(c, 1)}" for c in entry_cols)
+            if weights else "+".join(entry_cols))
+    lines = [f"strategy: {wtxt} (score>={min_count} in {window} "
              f"bars)  filter={filter_col or 'none'}  "
              f"exit={'+'.join(exit_cols) or 'none'}  stop={stop:.0%}  "
              f"hold={hold}  interval={interval}  universe={len(frames)}"

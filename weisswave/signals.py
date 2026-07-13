@@ -103,17 +103,21 @@ def recent(cond: pd.Series, bars: int) -> pd.Series:
 
 
 def combine_signals(sig: pd.DataFrame, columns: list, min_count: int = 1,
-                    window: int = 3) -> pd.Series:
+                    window: int = 3, weights: dict | None = None) -> pd.Series:
     """Confluence rule: True on bars where at least one selected signal fires
-    AND at least `min_count` distinct selected signals have fired within the
-    last `window` bars. min_count acts as a strictness weight (1 = any one
-    signal is enough; len(columns) = all must agree)."""
+    AND the selected signals that fired within the last `window` bars sum to
+    at least `min_count`. With no `weights` every signal counts 1 (min_count
+    = distinct-signal count, the original behavior); `weights` maps column ->
+    small integer so one signal can count double, or 0 to make it advisory.
+    Keep weights coarse (0-3): fine-grained weights are a curve-fit magnet."""
     cols = [c for c in columns if c in sig.columns]
     if not cols:
         return pd.Series(False, index=sig.index)
-    fired_now = sig[cols].any(axis=1)
-    count = sum(recent(sig[c], window).astype(int) for c in cols)
-    return fired_now & (count >= min_count)
+    w = {c: int((weights or {}).get(c, 1)) for c in cols}
+    fired_now = sig[[c for c in cols if w[c] > 0]].any(axis=1) \
+        if any(w[c] > 0 for c in cols) else sig[cols].any(axis=1)
+    score = sum(recent(sig[c], window).astype(int) * w[c] for c in cols)
+    return fired_now & (score >= min_count)
 
 
 SIGNAL_COLUMNS_BULL = [

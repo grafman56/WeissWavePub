@@ -889,6 +889,7 @@ with tab_today:
                "partial if fetched while the market is open.")
     have_finder = "finder_results" in st.session_state
     saved_strats = load_saved_strategies()
+    strat_weights = None            # only Saved strategies carry weights
     source = st.radio("Entry rule",
                       ["Presets", "Manual"]
                       + (["Saved"] if saved_strats else [])
@@ -909,6 +910,7 @@ with tab_today:
         min_count = int(s_cfg.get("min_count", 1))
         window = int(s_cfg.get("window", 5))
         filter_col = s_cfg.get("filter")
+        strat_weights = s_cfg.get("weights")
         st.write(f"Entry: **{' + '.join(entry_cols)}** (>= {min_count} in "
                  f"{window} bars), filter: **{filter_col or 'none'}**")
     elif source == "From finder":
@@ -961,7 +963,8 @@ with tab_today:
                                       start_date, end_date, db_stamp())
         rows = []
         for s, sig in frames.items():
-            entry = combine_signals(sig, entry_cols, min_count, window)
+            entry = combine_signals(sig, entry_cols, min_count, window,
+                                    strat_weights)
             if filter_col:
                 entry = entry & sig[filter_col].astype(bool)
             tail = entry.iloc[-lookback:]
