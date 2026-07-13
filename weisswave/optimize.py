@@ -71,6 +71,7 @@ def prepare_universe(frames: dict, entry_signals=None, filter_cols=None,
                 for h in horizons]),
             "open": sig["Open"].to_numpy(float),
             "low": sig["Low"].to_numpy(float),
+            "high": sig["High"].to_numpy(float),
             "close": sig["Close"].to_numpy(float),
             "bench": bench.reindex(sig.index).ffill().to_numpy(float),
             "cut": int(n * train_frac),
@@ -194,8 +195,8 @@ def find_strategies(frames: dict, entry_signals=None, filter_cols=None,
             for label, sl in (("train", slice(0, cut)), ("test", slice(cut, None))):
                 b = d["bench"][sl]
                 for ei, xi_, epx, xpx, _r in _simulate(
-                        d["open"][sl], d["low"][sl], d["close"][sl],
-                        ent[sl], ext[sl], stop, hold):
+                        d["open"][sl], d["low"][sl], d["high"][sl],
+                        d["close"][sl], ent[sl], ext[sl], stop, hold):
                     ret = xpx / epx - 1
                     market = b[xi_] / b[ei] - 1 if b[ei] > 0 else 0.0
                     halves[label][0].append(ret)
