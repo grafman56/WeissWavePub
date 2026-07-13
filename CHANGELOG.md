@@ -3,6 +3,17 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.5.3 — 2026-07-12
+
+- **Signal cache**: the harness builds full-history signals once per DB
+  update (parquet keyed on the DB file's mtime) and every later run —
+  any strategy, any window — loads in seconds. Backtests drop from ~90s
+  to ~3-5s.
+- `test_strategy.py --months=N` tests only the recent window (fast
+  regime check; output flags it as in-sample and low-n so it is never
+  mistaken for validation) and `--cost-bps=F` haircuts every trade by a
+  round-trip cost estimate, so verdicts can be read after fees.
+
 ## 0.5.2 — 2026-07-12
 
 - **One-command backtest harness** (`test_strategy.py`): test any entry

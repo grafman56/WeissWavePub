@@ -21,6 +21,11 @@ Options (defaults in brackets):
     --hold=N        max bars held [20]
     --interval=I    bar interval [1d]
     --symbols=A,B   restrict universe (quick runs) [all]
+    --months=N      test only the last N months (plus indicator warm-up);
+                    much faster, but no train/test split and low trade
+                    counts - promote survivors with a full-history run [all]
+    --cost-bps=F    round-trip cost haircut in basis points applied to
+                    every trade (spread+slippage; 10 = 0.10%) [0]
 
 Prints train/test stats (70/30 per-symbol time split; test half is the
 honesty check) including excess vs the equal-weight buy-and-hold benchmark.
@@ -32,15 +37,60 @@ import os
 import sys
 from datetime import datetime
 
-import numpy as np
+import glob
 
-from weisswave.db import connect, list_symbols, load_prices
+import numpy as np
+import pandas as pd
+
+from weisswave.db import DB_PATH, connect, list_symbols, load_prices
 from weisswave.optimize import evaluate_config
 from weisswave.signals import (FILTER_COLUMNS, SIGNAL_COLUMNS_BEAR,
                                SIGNAL_COLUMNS_BULL, build_signals)
 
 STRATEGIES_PATH = "strategies.json"
 RESULTS_LOG = os.path.join("agent-tasks", "results.log")
+CACHE_DIR = "signals_cache"
+
+
+def load_universe(interval: str, cutoff) -> dict:
+    """Signal frames for the whole universe via a parquet cache keyed on
+    the DB file's mtime: first call after a fetch rebuilds (~2 min), every
+    later call loads in seconds. build_signals default parameters only."""
+    key = os.path.join(CACHE_DIR,
+                       f"signals_{interval.replace(':', '')}_"
+                       f"{int(os.path.getmtime(DB_PATH))}.parquet")
+    if not os.path.exists(key):
+        con = connect(read_only=True)
+        parts = []
+        for s in list_symbols(con, interval):
+            df = load_prices(con, s, interval)
+            if len(df) < 300:
+                continue
+            try:
+                sig = build_signals(df)
+            except Exception:
+                continue
+            sig.index.name = "ts"
+            sig["symbol"] = s
+            parts.append(sig.reset_index())
+        con.close()
+        if not parts:
+            fail(f"no usable {interval} data in {DB_PATH}")
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        for old in glob.glob(os.path.join(CACHE_DIR,
+                                          f"signals_{interval}_*.parquet")):
+            os.remove(old)
+        pd.concat(parts, ignore_index=True).to_parquet(key)
+    pooled = pd.read_parquet(key)
+    frames = {}
+    for s, g in pooled.groupby("symbol"):
+        g = g.drop(columns="symbol").set_index("ts")
+        if cutoff is not None:
+            g = g[g.index >= cutoff]
+            if len(g) < 20:
+                continue
+        frames[s] = g
+    return frames
 
 
 def emit(lines):
@@ -129,25 +179,36 @@ def main():
     hold = int(arg(args, "hold", "20"))
     interval = arg(args, "interval", "1d")
     sym_arg = arg(args, "symbols", None)
+    months = int(arg(args, "months", "0"))
+    cost = float(arg(args, "cost-bps", "0")) / 10000.0
 
     known = set(SIGNAL_COLUMNS_BULL + SIGNAL_COLUMNS_BEAR + FILTER_COLUMNS)
     for c in entry_cols + exit_cols + ([filter_col] if filter_col else []):
         if c not in known:
             fail(f"unknown signal column '{c}' (see --list-signals)")
 
-    con = connect(read_only=True)
-    symbols = ([s.strip().upper() for s in sym_arg.split(",")] if sym_arg
-               else list_symbols(con, interval))
-    frames = {}
-    for s in symbols:
-        df = load_prices(con, s, interval)
-        if len(df) < 300:
-            continue
-        try:
-            frames[s] = build_signals(df)
-        except Exception:
-            pass
-    con.close()
+    cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
+              if months else None)
+    if sym_arg:
+        # explicit symbol list: small, build directly (no cache round-trip)
+        con = connect(read_only=True)
+        frames = {}
+        for s in [x.strip().upper() for x in sym_arg.split(",")]:
+            df = load_prices(con, s, interval)
+            if len(df) < 300:
+                continue
+            try:
+                sig = build_signals(df)
+            except Exception:
+                continue
+            if cutoff is not None:
+                sig = sig[sig.index >= cutoff]
+                if len(sig) < 20:
+                    continue
+            frames[s] = sig
+        con.close()
+    else:
+        frames = load_universe(interval, cutoff)
     if not frames:
         fail(f"no usable {interval} data for the requested symbols")
 
@@ -156,17 +217,38 @@ def main():
     lines = [f"strategy: {'+'.join(entry_cols)} (>={min_count} in {window} "
              f"bars)  filter={filter_col or 'none'}  "
              f"exit={'+'.join(exit_cols) or 'none'}  stop={stop:.0%}  "
-             f"hold={hold}  interval={interval}  universe={len(frames)}"]
+             f"hold={hold}  interval={interval}  universe={len(frames)}"
+             + (f"  window=last {months}mo" if months else "")
+             + (f"  cost={cost * 10000:.0f}bps" if cost else "")]
     if trades.empty:
         emit(lines + ["no trades triggered"])
         return
-    lines += [half_line(trades, "train"), half_line(trades, "test")]
-    xs = trades.loc[trades["half"] == "test", "excess"]
-    if len(xs):
-        verdict = ("BEATS buy-and-hold out of sample" if xs.mean() > 0
-                   else "does NOT beat buy-and-hold out of sample")
-        lines.append(f"verdict: {verdict} ({xs.mean():+.2%}/trade excess, "
-                     f"n={len(xs)})")
+    if cost:
+        trades["ret"] -= cost
+        trades["excess"] -= cost
+
+    if months:
+        # short window: no meaningful train/test split — report all trades
+        r, xs = trades["ret"], trades["excess"]
+        wins = r[r > 0].sum()
+        losses = -r[r < 0].sum()
+        pf = wins / losses if losses > 0 else float("inf")
+        lines.append(f"all    n={len(r):5d}  win={(r > 0).mean():6.1%}  "
+                     f"avg={r.mean():+7.2%}  excess={xs.mean():+7.2%}  "
+                     f"PF={pf:5.2f}")
+        beat = "BEAT" if xs.mean() > 0 else "did NOT beat"
+        lines.append(f"verdict: {beat} buy-and-hold over the last {months}mo "
+                     f"({xs.mean():+.2%}/trade excess, n={len(r)}) - "
+                     f"in-sample regime check only"
+                     + ("; LOW N, indicative at best" if len(r) < 100 else ""))
+    else:
+        lines += [half_line(trades, "train"), half_line(trades, "test")]
+        xs = trades.loc[trades["half"] == "test", "excess"]
+        if len(xs):
+            verdict = ("BEATS buy-and-hold out of sample" if xs.mean() > 0
+                       else "does NOT beat buy-and-hold out of sample")
+            lines.append(f"verdict: {verdict} ({xs.mean():+.2%}/trade "
+                         f"excess, n={len(xs)})")
     emit(lines)
 
 
