@@ -3,6 +3,23 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.7.0 — 2026-07-13
+
+- **Trade-with-the-trend is now the default.** `test_strategy.py` and
+  `portfolio_sim.py` apply a daily trend gate (`minervini@1d`)
+  automatically; pass `--gate=none` to disable or `--gate=COL@IV` to
+  override. Trading against the trend is opt-in, not the default.
+- **Profit-target exit** (`--target=0.10`) added to the simulator
+  (`backtest_long`/`_simulate`), the harness, and the portfolio sim,
+  alongside the existing stop, time, and exit-signal exits. Intrabar
+  fills check stop before target (conservative).
+- Portfolio sim gained exit-signal support (`--exit=col`), so open
+  positions can be closed on a weakness signal, matching how the bot
+  will watch trades (first of target / stop / signal / time to hit).
+- New intraday research tools: `combo_fire_check.py` (combo firing
+  counts per timeframe) and `combo_event_study.py` (combo edge, with
+  optional trend gate).
+
 ## 0.6.1 — 2026-07-13
 
 - `portfolio_sim.py` gains `--gate=COL@INTERVAL`: the portfolio-level

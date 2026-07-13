@@ -207,7 +207,10 @@ def main():
     sym_arg = arg(args, "symbols", None)
     months = int(arg(args, "months", "0"))
     cost = float(arg(args, "cost-bps", "0")) / 10000.0
-    gate_arg = arg(args, "gate", None)          # e.g. minervini@1d
+    # trend gate is ON by default (trade with the trend); --gate=none to disable
+    gate_arg = arg(args, "gate", "minervini@1d")
+    target = arg(args, "target", None)
+    target = float(target) if target not in (None, "none", "") else None
     gate_col = gate_iv = None
     if gate_arg and gate_arg != "none":
         if "@" not in gate_arg:
@@ -269,7 +272,7 @@ def main():
 
     trades = evaluate_config(frames, entry_cols, min_count, window,
                              filter_col, exit_cols, stop, hold,
-                             weights=weights)
+                             weights=weights, take_profit=target)
     wtxt = ("+".join(f"{c}x{weights.get(c, 1)}" for c in entry_cols)
             if weights else "+".join(entry_cols))
     ftxt = gate_arg if gate_col else (filter_col or "none")
@@ -277,6 +280,7 @@ def main():
              f"bars)  filter={ftxt}  "
              f"exit={'+'.join(exit_cols) or 'none'}  stop={stop:.0%}  "
              f"hold={hold}  interval={interval}  universe={len(frames)}"
+             + (f"  target={target:.0%}" if target else "")
              + (f"  window=last {months}mo" if months else "")
              + (f"  cost={cost * 10000:.0f}bps" if cost else "")]
     if trades.empty:

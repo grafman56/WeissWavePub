@@ -63,11 +63,14 @@ class BacktestResult:
                 f"total={self.total_return:.1%}")
 
 
-def _simulate(o: np.ndarray, lo: np.ndarray, c: np.ndarray,
+def _simulate(o: np.ndarray, lo: np.ndarray, hi: np.ndarray, c: np.ndarray,
               ent: np.ndarray, ext: np.ndarray,
-              stop_loss: float | None, max_bars: int | None) -> list:
+              stop_loss: float | None, max_bars: int | None,
+              take_profit: float | None = None) -> list:
     """Core sequential long-only loop on raw arrays.
-    Returns [(entry_i, exit_i, entry_px, exit_px, reason), ...]."""
+    Returns [(entry_i, exit_i, entry_px, exit_px, reason), ...].
+    Intrabar exits check stop before target (conservative: if a bar's range
+    spans both, assume the adverse fill)."""
     n = len(o)
     trades = []
     i = 0
@@ -78,11 +81,15 @@ def _simulate(o: np.ndarray, lo: np.ndarray, c: np.ndarray,
         entry_i = i + 1                      # signal on close of i → buy open of i+1
         entry_px = o[entry_i]
         stop_px = entry_px * (1 - stop_loss) if stop_loss else -np.inf
+        tp_px = entry_px * (1 + take_profit) if take_profit else np.inf
         exit_i, exit_px, reason = None, None, None
         j = entry_i
         while j < n:
             if lo[j] <= stop_px:
                 exit_i, exit_px, reason = j, min(o[j], stop_px), "stop"
+                break
+            if hi[j] >= tp_px:               # target touched intrabar
+                exit_i, exit_px, reason = j, max(o[j], tp_px), "target"
                 break
             if ext[j] and j + 1 < n:         # exit signal on close → sell next open
                 exit_i, exit_px, reason = j + 1, o[j + 1], "signal"
@@ -100,18 +107,20 @@ def _simulate(o: np.ndarray, lo: np.ndarray, c: np.ndarray,
 
 def backtest_long(df: pd.DataFrame, entry: pd.Series, exit_: pd.Series,
                   stop_loss: float | None = None,
-                  max_bars: int | None = None) -> BacktestResult:
+                  max_bars: int | None = None,
+                  take_profit: float | None = None) -> BacktestResult:
     """Sequential long-only simulator, next-open execution.
 
     entry/exit_ are boolean Series aligned to df. A stop_loss of e.g. 0.05
     exits when the LOW trades 5% below entry (filled at the stop price, or
-    the open if it gapped through). max_bars force-exits a stale position.
+    the open if it gapped through). take_profit of e.g. 0.10 exits when the
+    HIGH trades 10% above entry. max_bars force-exits a stale position.
     """
     raw = _simulate(df["Open"].to_numpy(float), df["Low"].to_numpy(float),
-                    df["Close"].to_numpy(float),
+                    df["High"].to_numpy(float), df["Close"].to_numpy(float),
                     entry.fillna(False).to_numpy(bool),
                     exit_.fillna(False).to_numpy(bool),
-                    stop_loss, max_bars)
+                    stop_loss, max_bars, take_profit)
     trades = [{
         "entry_idx": df.index[ei], "exit_idx": df.index[xi],
         "entry_px": epx, "exit_px": xpx,

@@ -77,7 +77,11 @@ def main():
     cost_side = float(arg(args, "cost-bps", "0")) / 10000.0 / 2
     max_pos = int(arg(args, "max-positions", "5"))
     capital = float(arg(args, "capital", "100000"))
-    gate_arg = arg(args, "gate", None)          # e.g. minervini@1d
+    gate_arg = arg(args, "gate", "minervini@1d")    # trend gate ON by default
+    target = arg(args, "target", None)
+    target = float(target) if target not in (None, "none", "") else None
+    exit_arg = arg(args, "exit", None)
+    exit_cols = [] if exit_arg in (None, "none", "") else exit_arg.split(",")
     gate_col = gate_iv = None
     if gate_arg and gate_arg != "none":
         if "@" not in gate_arg:
@@ -85,7 +89,7 @@ def main():
         gate_col, gate_iv = gate_arg.split("@", 1)
 
     known = set(SIGNAL_COLUMNS_BULL + SIGNAL_COLUMNS_BEAR + FILTER_COLUMNS)
-    for c in entry_cols + ([filter_col] if filter_col else []) \
+    for c in entry_cols + exit_cols + ([filter_col] if filter_col else []) \
             + ([gate_col] if gate_col else []):
         if c not in known:
             fail(f"unknown signal column '{c}'")
@@ -127,11 +131,15 @@ def main():
         w = {c: int((weights or {}).get(c, 1)) for c in entry_cols
              if c in sig.columns}
         score = sum(recent(sig[c], window).astype(int) * w[c] for c in w)
+        ext = (sig[[c for c in exit_cols if c in sig.columns]].astype(bool)
+               .any(axis=1).to_numpy(bool) if exit_cols
+               else np.zeros(len(sig), bool))
         data[s] = {"idx": sig.index.values,
                    "open": sig["Open"].to_numpy(float),
                    "low": sig["Low"].to_numpy(float),
+                   "high": sig["High"].to_numpy(float),
                    "close": sig["Close"].to_numpy(float),
-                   "ent": ent.to_numpy(bool),
+                   "ent": ent.to_numpy(bool), "ext": ext,
                    "score": np.asarray(score, float), "ptr": 0}
 
     master = np.array(sorted(set(np.concatenate(
@@ -163,6 +171,10 @@ def main():
             exit_px = None
             if d["low"][k] <= pos["stop_px"]:
                 exit_px, reason = min(d["open"][k], pos["stop_px"]), "stop"
+            elif d["high"][k] >= pos["tp_px"]:
+                exit_px, reason = max(d["open"][k], pos["tp_px"]), "target"
+            elif k > 0 and d["ext"][k - 1]:      # exit signal prior close -> open
+                exit_px, reason = d["open"][k], "signal"
             elif pos["held"] >= hold:
                 exit_px, reason = d["open"][k], "time"
             if exit_px is not None:
@@ -196,8 +208,11 @@ def main():
                     continue
                 shares = alloc / px
                 cash -= shares * px
+                base_px = data[s]["open"][k]
                 positions[s] = {"shares": shares, "entry": px,
-                                "stop_px": data[s]["open"][k] * (1 - stop),
+                                "stop_px": base_px * (1 - stop),
+                                "tp_px": base_px * (1 + target) if target
+                                else float("inf"),
                                 "held": 0}
 
         mkt_val = sum(p["shares"] * data[s]["close"][today[s]]
@@ -218,8 +233,10 @@ def main():
     ftxt = gate_arg if gate_col else (filter_col or "none")
     lines = [
         f"portfolio: {'+'.join(entry_cols)} (score>={min_count} in {window}) "
-        f"filter={ftxt} stop={stop:.0%} hold={hold} "
-        f"interval={interval} max_pos={max_pos} "
+        f"gate={ftxt} stop={stop:.0%}"
+        + (f" target={target:.0%}" if target else "")
+        + (f" exit={'+'.join(exit_cols)}" if exit_cols else "")
+        + f" hold={hold} interval={interval} max_pos={max_pos} "
         f"cost={cost_side * 2 * 10000:.0f}bps"
         + (f" window=last {months}mo" if months else ""),
         f"period: {eq.index[0].date()} -> {eq.index[-1].date()}  "

@@ -226,7 +226,8 @@ def evaluate_config(frames: dict, entry_cols: list, min_count: int,
                     window: int, filter_col: str | None, exit_cols: list,
                     stop: float | None, max_bars: int | None,
                     train_frac: float = 0.7,
-                    weights: dict | None = None) -> pd.DataFrame:
+                    weights: dict | None = None,
+                    take_profit: float | None = None) -> pd.DataFrame:
     """Re-run one configuration and return ALL its trades with the symbol
     and train/test half attached — the per-symbol drill-down behind a
     finder result."""
@@ -237,7 +238,8 @@ def evaluate_config(frames: dict, entry_cols: list, min_count: int,
             ent = ent & sig[filter_col].astype(bool)
         ext = (sig[exit_cols].astype(bool).any(axis=1) if exit_cols
                else pd.Series(False, index=sig.index))
-        res = backtest_long(sig, ent, ext, stop_loss=stop, max_bars=max_bars)
+        res = backtest_long(sig, ent, ext, stop_loss=stop, max_bars=max_bars,
+                            take_profit=take_profit)
         if res.n_trades:
             t = res.trades.copy()
             t["symbol"] = sym
