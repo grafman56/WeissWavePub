@@ -30,6 +30,7 @@ Exit code 0 on success, 2 on bad arguments/config.
 import json
 import os
 import sys
+from datetime import datetime
 
 import numpy as np
 
@@ -39,6 +40,20 @@ from weisswave.signals import (FILTER_COLUMNS, SIGNAL_COLUMNS_BEAR,
                                SIGNAL_COLUMNS_BULL, build_signals)
 
 STRATEGIES_PATH = "strategies.json"
+RESULTS_LOG = os.path.join("agent-tasks", "results.log")
+
+
+def emit(lines):
+    """Print result lines and append them to the results log, so outcomes
+    survive even when an orchestrating agent fumbles the relay."""
+    text = "\n".join(lines)
+    print(text)
+    try:
+        os.makedirs(os.path.dirname(RESULTS_LOG), exist_ok=True)
+        with open(RESULTS_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}]\n{text}\n\n")
+    except OSError:
+        pass                      # logging must never break the run
 
 
 def arg(args, name, default):
@@ -138,21 +153,21 @@ def main():
 
     trades = evaluate_config(frames, entry_cols, min_count, window,
                              filter_col, exit_cols, stop, hold)
-    print(f"strategy: {'+'.join(entry_cols)} (>={min_count} in {window} "
-          f"bars)  filter={filter_col or 'none'}  "
-          f"exit={'+'.join(exit_cols) or 'none'}  stop={stop:.0%}  "
-          f"hold={hold}  interval={interval}  universe={len(frames)}")
+    lines = [f"strategy: {'+'.join(entry_cols)} (>={min_count} in {window} "
+             f"bars)  filter={filter_col or 'none'}  "
+             f"exit={'+'.join(exit_cols) or 'none'}  stop={stop:.0%}  "
+             f"hold={hold}  interval={interval}  universe={len(frames)}"]
     if trades.empty:
-        print("no trades triggered")
+        emit(lines + ["no trades triggered"])
         return
-    print(half_line(trades, "train"))
-    print(half_line(trades, "test"))
+    lines += [half_line(trades, "train"), half_line(trades, "test")]
     xs = trades.loc[trades["half"] == "test", "excess"]
     if len(xs):
         verdict = ("BEATS buy-and-hold out of sample" if xs.mean() > 0
                    else "does NOT beat buy-and-hold out of sample")
-        print(f"verdict: {verdict} ({xs.mean():+.2%}/trade excess, "
-              f"n={len(xs)})")
+        lines.append(f"verdict: {verdict} ({xs.mean():+.2%}/trade excess, "
+                     f"n={len(xs)})")
+    emit(lines)
 
 
 if __name__ == "__main__":
