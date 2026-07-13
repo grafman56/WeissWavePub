@@ -151,6 +151,44 @@ def half_line(trades, half):
             f"PF={pf:5.2f}")
 
 
+GATE_DUR = {"1d": pd.Timedelta(days=1), "4h": pd.Timedelta(hours=4),
+            "1h": pd.Timedelta(hours=1), "15m": pd.Timedelta(minutes=15),
+            "5m": pd.Timedelta(minutes=5), "1m": pd.Timedelta(minutes=1)}
+
+
+def apply_gates(frames: dict, gates: list, filter_col):
+    """Stack of higher-timeframe trend gates (trade with the trend at every
+    level of the cascade). gates = [(col, interval), ...]; an entry bar is
+    allowed only when EVERY gate is True on the most recent higher-TF bar
+    that CLOSED before it (no lookahead). Returns the gated frames; the
+    combined gate lands in an 'xtf_gate' column."""
+    gframes = {iv: load_universe(iv, None) for iv in {iv for _, iv in gates}}
+    out = {}
+    for s, sig in frames.items():
+        ok = np.ones(len(sig), bool)
+        usable = True
+        for col, iv in gates:
+            gu = gframes[iv].get(s)
+            if gu is None or col not in gu.columns:
+                usable = False
+                break
+            gser = gu[col].astype(bool)
+            # value is knowable only at the gate bar's CLOSE (start + duration)
+            gclose = pd.Series(gser.to_numpy(),
+                               index=gser.index + GATE_DUR.get(iv, pd.Timedelta(0)))
+            gclose = gclose[~gclose.index.duplicated(keep="last")].sort_index()
+            mapped = gclose.reindex(sig.index, method="ffill").fillna(False)
+            ok &= mapped.to_numpy(bool)
+        if not usable:
+            continue
+        sig = sig.copy()
+        sig["xtf_gate"] = ok
+        if filter_col:
+            sig["xtf_gate"] &= sig[filter_col].astype(bool)
+        out[s] = sig
+    return out
+
+
 def main():
     args = sys.argv[1:]
 
@@ -211,15 +249,17 @@ def main():
     gate_arg = arg(args, "gate", "minervini@1d")
     target = arg(args, "target", None)
     target = float(target) if target not in (None, "none", "") else None
-    gate_col = gate_iv = None
+    gates = []                      # [(col, interval), ...]; all ANDed
     if gate_arg and gate_arg != "none":
-        if "@" not in gate_arg:
-            fail("--gate needs COL@INTERVAL, e.g. minervini@1d")
-        gate_col, gate_iv = gate_arg.split("@", 1)
+        for g in gate_arg.split(","):
+            if "@" not in g:
+                fail("--gate needs COL@INTERVAL[,COL@INTERVAL...], "
+                     "e.g. minervini@1d,above_50ma@4h")
+            gates.append(tuple(g.split("@", 1)))
 
     known = set(SIGNAL_COLUMNS_BULL + SIGNAL_COLUMNS_BEAR + FILTER_COLUMNS)
     for c in entry_cols + exit_cols + ([filter_col] if filter_col else []) \
-            + ([gate_col] if gate_col else []) + list(weights or {}):
+            + [gc for gc, _ in gates] + list(weights or {}):
         if c not in known:
             fail(f"unknown signal column '{c}' (see --list-signals)")
 
@@ -248,34 +288,18 @@ def main():
     if not frames:
         fail(f"no usable {interval} data for the requested symbols")
 
-    if gate_col:
-        # yesterday's higher-timeframe gate mapped onto each intraday bar
-        gate_frames = load_universe(gate_iv, None)
-        gated = {}
-        for s, sig in frames.items():
-            g = gate_frames.get(s)
-            if g is None or gate_col not in g.columns:
-                continue
-            prior = g[gate_col].astype(bool).shift(1).fillna(False)
-            prior.index = pd.DatetimeIndex(prior.index).normalize()
-            prior = prior[~prior.index.duplicated(keep="last")]
-            mapped = prior.reindex(sig.index.normalize()).fillna(False)
-            sig = sig.copy()
-            sig["xtf_gate"] = mapped.to_numpy()
-            if filter_col:
-                sig["xtf_gate"] &= sig[filter_col].astype(bool)
-            gated[s] = sig
-        frames = gated
+    if gates:
+        frames = apply_gates(frames, gates, filter_col)
         filter_col = "xtf_gate"
         if not frames:
-            fail(f"gate column '{gate_col}' not available on {gate_iv}")
+            fail(f"gate columns {[c for c, _ in gates]} not available")
 
     trades = evaluate_config(frames, entry_cols, min_count, window,
                              filter_col, exit_cols, stop, hold,
                              weights=weights, take_profit=target)
     wtxt = ("+".join(f"{c}x{weights.get(c, 1)}" for c in entry_cols)
             if weights else "+".join(entry_cols))
-    ftxt = gate_arg if gate_col else (filter_col or "none")
+    ftxt = gate_arg if gates else (filter_col or "none")
     lines = [f"strategy: {wtxt} (score>={min_count} in {window} "
              f"bars)  filter={ftxt}  "
              f"exit={'+'.join(exit_cols) or 'none'}  stop={stop:.0%}  "

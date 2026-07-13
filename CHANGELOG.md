@@ -3,6 +3,15 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.7.1 — 2026-07-13
+
+- **Stacked multi-timeframe trend gates.** `--gate` now accepts several
+  `COL@INTERVAL` pairs (e.g. `minervini@1d,above_50ma@4h`), all ANDed —
+  the higher timeframes select which stocks/bars are worth trading, the
+  entry fires on the small `--interval`. Gate values map by the gate
+  bar's close time (start + duration, forward-filled), so a 4h or 1h
+  gate maps onto 5m bars with no lookahead, not just daily-by-date.
+
 ## 0.7.0 — 2026-07-13
 
 - **Trade-with-the-trend is now the default.** `test_strategy.py` and

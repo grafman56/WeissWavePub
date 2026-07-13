@@ -33,7 +33,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from test_strategy import (STRATEGIES_PATH, arg, emit, fail, load_universe)
+from test_strategy import (STRATEGIES_PATH, apply_gates, arg, emit, fail,
+                           load_universe)
 from weisswave.optimize import benchmark_index
 from weisswave.signals import (SIGNAL_COLUMNS_BEAR, SIGNAL_COLUMNS_BULL,
                                FILTER_COLUMNS, combine_signals, recent)
@@ -82,15 +83,17 @@ def main():
     target = float(target) if target not in (None, "none", "") else None
     exit_arg = arg(args, "exit", None)
     exit_cols = [] if exit_arg in (None, "none", "") else exit_arg.split(",")
-    gate_col = gate_iv = None
+    gates = []                      # [(col, interval), ...]; all ANDed
     if gate_arg and gate_arg != "none":
-        if "@" not in gate_arg:
-            fail("--gate needs COL@INTERVAL, e.g. minervini@1d")
-        gate_col, gate_iv = gate_arg.split("@", 1)
+        for g in gate_arg.split(","):
+            if "@" not in g:
+                fail("--gate needs COL@INTERVAL[,COL@INTERVAL...], "
+                     "e.g. minervini@1d,above_50ma@4h")
+            gates.append(tuple(g.split("@", 1)))
 
     known = set(SIGNAL_COLUMNS_BULL + SIGNAL_COLUMNS_BEAR + FILTER_COLUMNS)
     for c in entry_cols + exit_cols + ([filter_col] if filter_col else []) \
-            + ([gate_col] if gate_col else []):
+            + [gc for gc, _ in gates]:
         if c not in known:
             fail(f"unknown signal column '{c}'")
 
@@ -98,29 +101,11 @@ def main():
               if months else None)
     frames = load_universe(interval, cutoff)
 
-    if gate_col:
-        # yesterday's higher-timeframe gate mapped onto each intraday bar
-        # (shift(1) = no lookahead: today's bars see only the last COMPLETED
-        # gate-interval bar, exactly as a live bot would at the open).
-        gate_frames = load_universe(gate_iv, None)
-        gated = {}
-        for s, sig in frames.items():
-            g = gate_frames.get(s)
-            if g is None or gate_col not in g.columns:
-                continue
-            prior = g[gate_col].astype(bool).shift(1).fillna(False)
-            prior.index = pd.DatetimeIndex(prior.index).normalize()
-            prior = prior[~prior.index.duplicated(keep="last")]
-            mapped = prior.reindex(sig.index.normalize()).fillna(False)
-            sig = sig.copy()
-            sig["xtf_gate"] = mapped.to_numpy()
-            if filter_col:
-                sig["xtf_gate"] &= sig[filter_col].astype(bool)
-            gated[s] = sig
-        frames = gated
+    if gates:
+        frames = apply_gates(frames, gates, filter_col)
         filter_col = "xtf_gate"
         if not frames:
-            fail(f"gate column '{gate_col}' not available on {gate_iv}")
+            fail(f"gate columns {[c for c, _ in gates]} not available")
 
     # per-symbol arrays
     data = {}
@@ -230,7 +215,7 @@ def main():
     bench = bench / bench.iloc[0] * capital
     r = pd.Series([t["ret"] for t in trades])
 
-    ftxt = gate_arg if gate_col else (filter_col or "none")
+    ftxt = gate_arg if gates else (filter_col or "none")
     lines = [
         f"portfolio: {'+'.join(entry_cols)} (score>={min_count} in {window}) "
         f"gate={ftxt} stop={stop:.0%}"
