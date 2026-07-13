@@ -3,6 +3,26 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.6.0 — 2026-07-13
+
+- **Alpaca data provider** (`weisswave/provider.py`): SIP-feed historical
+  bars with split/dividend adjustment, regular-session filtering,
+  Vault-backed credentials (never on disk), rate-limit handling, and
+  share-class symbol mapping (BRK-B <-> BRK.B). Yahoo remains the
+  default; `WEISSWAVE_PROVIDER=alpaca` switches.
+- **Deep intraday backfill** (`alpaca_backfill.py`): resumable 15m
+  history since 2018 plus a year of 5m; session-aligned 1h and 4h bars
+  derived locally from 15m (Alpaca's clock-aligned hourly bars would
+  mix grids and premarket volume).
+- **Portfolio simulator** (`portfolio_sim.py`): finite capital,
+  position cap, score-ranked candidate selection, compounding equity
+  curve, CAGR/drawdown/exposure vs the equal-weight benchmark — the
+  bridge between per-trade edge and account-level returns.
+- Harness: `--gate=COL@INTERVAL` cross-timeframe trend gate (trade a
+  lower timeframe only inside a higher-timeframe trend), and a stale
+  signal-cache fallback so backtests keep running while a fetch or
+  backfill holds the database write lock.
+
 ## 0.5.3 — 2026-07-12
 
 - **Signal cache**: the harness builds full-history signals once per DB

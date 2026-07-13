@@ -14,7 +14,10 @@ with the same `history()` contract and return it from get_provider().
 Nothing else in the codebase changes.
 """
 
-from datetime import date, datetime
+import os
+import subprocess
+import time
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -76,6 +79,120 @@ class YahooProvider:
         return normalize_history(raw, interval)
 
 
-def get_provider() -> YahooProvider:
-    """Single switch point for the data source."""
+def _alpaca_creds() -> tuple:
+    """Key id + secret from env, else from Vault via WSL vault-get.sh.
+    Values live only in this process's memory — never logged or written."""
+    key = os.environ.get("APCA_API_KEY_ID")
+    sec = os.environ.get("APCA_API_SECRET_KEY")
+    if key and sec:
+        return key, sec
+
+    def _vault(field):
+        r = subprocess.run(
+            ["wsl", "/usr/local/bin/vault-get.sh", "lab/alpaca", field],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(f"vault-get.sh lab/alpaca {field} failed "
+                               f"(is Vault unsealed?)")
+        return r.stdout.strip()
+
+    return _vault("paper_key_id"), _vault("paper_secret")
+
+
+class AlpacaProvider:
+    """Alpaca Market Data v2 (SIP feed, split/dividend adjusted).
+
+    Free tier serves deep history — intraday bars back to ~2016 — but not
+    the most recent 15 minutes; `history()` therefore ends requests 16
+    minutes ago. Intraday bars are filtered to the regular session
+    (09:30-16:00 ET) to match the Yahoo-era bar conventions."""
+
+    name = "alpaca"
+    BASE = "https://data.alpaca.markets/v2/stocks/bars"
+    TIMEFRAMES = {"1m": "1Min", "5m": "5Min", "15m": "15Min",
+                  "1h": "1Hour", "1d": "1Day"}
+    CHUNK = 50                    # symbols per request
+    THROTTLE = 0.31               # seconds between requests (<200/min)
+
+    def __init__(self):
+        import requests
+        self._key, self._secret = _alpaca_creds()
+        self._session = requests.Session()      # connection reuse
+        self._session.headers.update({
+            "APCA-API-KEY-ID": self._key,
+            "APCA-API-SECRET-KEY": self._secret})
+
+    def _get(self, params: dict) -> dict:
+        for attempt in range(5):
+            r = self._session.get(self.BASE, params=params, timeout=60)
+            if r.status_code == 429:            # rate limited — back off
+                wait = int(r.headers.get("Retry-After", 20 * (attempt + 1)))
+                print(f"  [rate-limited, waiting {wait}s]", flush=True)
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise RuntimeError("Alpaca: still rate-limited after 5 attempts")
+
+    def history(self, symbols: list, start: datetime,
+                interval: str) -> pd.DataFrame | None:
+        tf = self.TIMEFRAMES.get(interval)
+        if tf is None:
+            return None
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        end = datetime.now(timezone.utc) - timedelta(minutes=16)
+        rows = []
+        for i in range(0, len(symbols), self.CHUNK):
+            chunk = symbols[i:i + self.CHUNK]
+            # share classes: Yahoo/DB use BRK-B, Alpaca wants BRK.B
+            to_alpaca = {s: s.replace("-", ".") for s in chunk}
+            from_alpaca = {v: k for k, v in to_alpaca.items()}
+            params = {
+                "symbols": ",".join(to_alpaca.values()), "timeframe": tf,
+                "start": pd.Timestamp(start, tz="UTC").isoformat(),
+                "end": end.isoformat(), "limit": 10000,
+                "adjustment": "all", "feed": "sip", "sort": "asc",
+            }
+            while True:
+                data = self._get(params)
+                for sym, bars in (data.get("bars") or {}).items():
+                    sym = from_alpaca.get(sym, sym.replace(".", "-"))
+                    for b in bars:
+                        rows.append((sym, b["t"], b["o"], b["h"], b["l"],
+                                     b["c"], b["v"]))
+                token = data.get("next_page_token")
+                if not token:
+                    break
+                params["page_token"] = token
+                time.sleep(self.THROTTLE)
+            time.sleep(self.THROTTLE)
+        if not rows:
+            return None
+        df = pd.DataFrame(rows, columns=["symbol", "ts", "open", "high",
+                                         "low", "close", "volume"])
+        ts = pd.to_datetime(df["ts"], utc=True)
+        if interval.endswith("d"):
+            df["ts"] = ts.dt.tz_convert("America/New_York").dt.normalize() \
+                         .dt.tz_localize(None)
+        else:
+            ny = ts.dt.tz_convert("America/New_York")
+            session = ((ny.dt.hour * 60 + ny.dt.minute >= 570)
+                       & (ny.dt.hour < 16))          # 09:30 <= t < 16:00 ET
+            df = df[session.to_numpy()]
+            ts = ts[session.to_numpy()]
+            df["ts"] = ts.dt.tz_localize(None)       # naive UTC, DB convention
+        df["interval"] = interval
+        df["adjclose"] = df["close"]
+        keep = ["symbol", "interval", "ts", "open", "high", "low",
+                "close", "volume", "adjclose"]
+        return df[keep].drop_duplicates(subset=["symbol", "interval", "ts"],
+                                        keep="last")
+
+
+def get_provider():
+    """Single switch point for the data source. Yahoo remains the default
+    for incremental fetching; set WEISSWAVE_PROVIDER=alpaca to switch."""
+    if os.environ.get("WEISSWAVE_PROVIDER", "yahoo").lower() == "alpaca":
+        return AlpacaProvider()
     return YahooProvider()

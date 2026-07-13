@@ -24,6 +24,10 @@ Options (defaults in brackets):
     --months=N      test only the last N months (plus indicator warm-up);
                     much faster, but no train/test split and low trade
                     counts - promote survivors with a full-history run [all]
+    --gate=COL@IV   cross-timeframe trend gate: entries only allowed when
+                    column COL was True on the PREVIOUS bar of interval IV
+                    (e.g. --gate=minervini@1d with --interval=1h trades
+                    hourly only inside a daily stage-2 uptrend) [none]
     --cost-bps=F    round-trip cost haircut in basis points applied to
                     every trade (spread+slippage; 10 = 0.10%) [0]
 
@@ -60,7 +64,21 @@ def load_universe(interval: str, cutoff) -> dict:
                        f"signals_{interval.replace(':', '')}_"
                        f"{int(os.path.getmtime(DB_PATH))}.parquet")
     if not os.path.exists(key):
-        con = connect(read_only=True)
+        try:
+            con = connect(read_only=True)
+        except Exception:
+            # DB is write-locked (backfill/fetch running). Iterate on the
+            # newest existing cache rather than blocking the whole workflow.
+            older = glob.glob(os.path.join(CACHE_DIR,
+                                           f"signals_{interval}_*.parquet"))
+            if not older:
+                fail(f"DB is locked (a fetch/backfill is running?) and no "
+                     f"cached {interval} signals exist yet")
+            key = max(older, key=os.path.getmtime)
+            print(f"WARNING: DB busy - using STALE signal cache "
+                  f"{os.path.basename(key)}; rerun after the fetch for "
+                  f"fresh data")
+            return _frames_from_parquet(key, cutoff)
         parts = []
         for s in list_symbols(con, interval):
             df = load_prices(con, s, interval)
@@ -81,6 +99,10 @@ def load_universe(interval: str, cutoff) -> dict:
                                           f"signals_{interval}_*.parquet")):
             os.remove(old)
         pd.concat(parts, ignore_index=True).to_parquet(key)
+    return _frames_from_parquet(key, cutoff)
+
+
+def _frames_from_parquet(key: str, cutoff) -> dict:
     pooled = pd.read_parquet(key)
     frames = {}
     for s, g in pooled.groupby("symbol"):
@@ -185,10 +207,16 @@ def main():
     sym_arg = arg(args, "symbols", None)
     months = int(arg(args, "months", "0"))
     cost = float(arg(args, "cost-bps", "0")) / 10000.0
+    gate_arg = arg(args, "gate", None)          # e.g. minervini@1d
+    gate_col = gate_iv = None
+    if gate_arg and gate_arg != "none":
+        if "@" not in gate_arg:
+            fail("--gate needs COL@INTERVAL, e.g. minervini@1d")
+        gate_col, gate_iv = gate_arg.split("@", 1)
 
     known = set(SIGNAL_COLUMNS_BULL + SIGNAL_COLUMNS_BEAR + FILTER_COLUMNS)
     for c in entry_cols + exit_cols + ([filter_col] if filter_col else []) \
-            + list(weights or {}):
+            + ([gate_col] if gate_col else []) + list(weights or {}):
         if c not in known:
             fail(f"unknown signal column '{c}' (see --list-signals)")
 
@@ -217,13 +245,36 @@ def main():
     if not frames:
         fail(f"no usable {interval} data for the requested symbols")
 
+    if gate_col:
+        # yesterday's higher-timeframe gate mapped onto each intraday bar
+        gate_frames = load_universe(gate_iv, None)
+        gated = {}
+        for s, sig in frames.items():
+            g = gate_frames.get(s)
+            if g is None or gate_col not in g.columns:
+                continue
+            prior = g[gate_col].astype(bool).shift(1).fillna(False)
+            prior.index = pd.DatetimeIndex(prior.index).normalize()
+            prior = prior[~prior.index.duplicated(keep="last")]
+            mapped = prior.reindex(sig.index.normalize()).fillna(False)
+            sig = sig.copy()
+            sig["xtf_gate"] = mapped.to_numpy()
+            if filter_col:
+                sig["xtf_gate"] &= sig[filter_col].astype(bool)
+            gated[s] = sig
+        frames = gated
+        filter_col = "xtf_gate"
+        if not frames:
+            fail(f"gate column '{gate_col}' not available on {gate_iv}")
+
     trades = evaluate_config(frames, entry_cols, min_count, window,
                              filter_col, exit_cols, stop, hold,
                              weights=weights)
     wtxt = ("+".join(f"{c}x{weights.get(c, 1)}" for c in entry_cols)
             if weights else "+".join(entry_cols))
+    ftxt = gate_arg if gate_col else (filter_col or "none")
     lines = [f"strategy: {wtxt} (score>={min_count} in {window} "
-             f"bars)  filter={filter_col or 'none'}  "
+             f"bars)  filter={ftxt}  "
              f"exit={'+'.join(exit_cols) or 'none'}  stop={stop:.0%}  "
              f"hold={hold}  interval={interval}  universe={len(frames)}"
              + (f"  window=last {months}mo" if months else "")
