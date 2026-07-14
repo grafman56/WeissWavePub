@@ -28,14 +28,23 @@ from weisswave import portsim
 from weisswave.db import DB_PATH
 from weisswave.optimize import benchmark_index
 from weisswave.signals import combine_signals, recent
+from weisswave.structure import confirmed_pivots
 
-STOP_MODES = {"pct": portsim.PCT, "atr": portsim.ATR, "swing": portsim.SWING}
+STOP_MODES = {"pct": portsim.PCT, "atr": portsim.ATR, "swing": portsim.SWING,
+              "fib": portsim.FIB}
+TRAIL_MODES = {"pct": portsim.TRAIL_PCT, "structure": portsim.TRAIL_STRUCT}
+# only the pivot window is baked into the grid; the fib ratio/buffer are
+# applied at sim time so they stay cheaply sweepable.
+FIB_DEFAULTS = {"left": 5, "right": 5}
 
 
 def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
-               atr_len, swing_look):
+               atr_len, swing_look, fib_left=5, fib_right=5):
     """Align all symbols onto a common time grid -> 2D (T x S) arrays for the
     numba engine, plus per-bar best-strategy entry/score/index and stop refs.
+    ATR/SW are per-bar stop references; FIB_HI/FIB_LO are the last confirmed
+    swing high / low ladders (the engine forms the fib stop/target/trail from
+    them at sim time). All lookahead-free — computed from bars <= t.
     Returns (arrays dict, symbols, grid, strat_stop/hold/target)."""
     syms = list(frames.keys())
     S = len(syms)
@@ -43,7 +52,8 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         *[set(f.index.values) for f in frames.values()])))
     T = len(grid)
     gpos = {ts: i for i, ts in enumerate(grid)}
-    A = {k: np.zeros((T, S)) for k in ("O", "H", "L", "C", "SCORE", "ATR", "SW")}
+    A = {k: np.zeros((T, S)) for k in ("O", "H", "L", "C", "SCORE", "ATR",
+                                       "SW", "FIB_HI", "FIB_LO")}
     V = np.zeros((T, S), bool)
     ENT = np.zeros((T, S), bool)
     SIDX = np.zeros((T, S), np.int64)
@@ -70,6 +80,9 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         tr = np.maximum(hi - lo, np.maximum(np.abs(hi - pc), np.abs(lo - pc)))
         A["ATR"][pos, j] = pd.Series(tr).rolling(atr_len, min_periods=1).mean()
         A["SW"][pos, j] = pd.Series(lo).rolling(swing_look, min_periods=1).min()
+        ph, pl = confirmed_pivots(sig["High"], sig["Low"], fib_left, fib_right)
+        A["FIB_HI"][pos, j] = ph.to_numpy()      # last confirmed swing high H
+        A["FIB_LO"][pos, j] = pl.to_numpy()      # last confirmed swing low L
 
         best_score = np.full(len(sig), -1.0)
         best_idx = np.zeros(len(sig), np.int64)
@@ -120,12 +133,15 @@ def _apply_market(frames, market):
 def prepare_grid(strategies, interval="15m",
                  gate_arg="minervini@1d,above_50ma@4h", market="none",
                  months=0, exit_cols=None, gstop=None, ghold=None,
-                 gtarget=None, atr_len=14, swing_look=20, cutoff=None):
+                 gtarget=None, atr_len=14, swing_look=20, cutoff=None,
+                 fib=None):
     """All the expensive, param-independent work: load -> gate -> market ->
     build 2D grid. Do this ONCE, then sweep exit params via portsim.simulate
     on the returned arrays (each config = a numba call = milliseconds).
     Pass an explicit `cutoff` to override the months-derived window (the grid
-    cache uses this so a hit is a byte-identical rebuild)."""
+    cache uses this so a hit is a byte-identical rebuild). `fib` is the
+    build-time pivot config (left/right/stop_ratio/buf) for the FIB stop."""
+    fib = {**FIB_DEFAULTS, **(fib or {})}
     gates = [tuple(g.split("@", 1)) for g in gate_arg.split(",")
              if "@" in g] if gate_arg != "none" else []
     if cutoff is None and months:
@@ -135,7 +151,7 @@ def prepare_grid(strategies, interval="15m",
         frames = apply_gates(frames, gates, None)
     frames = _apply_market(frames, market)
     grid = build_grid(frames, strategies, exit_cols or [], gstop, ghold,
-                      gtarget, atr_len, swing_look)
+                      gtarget, atr_len, swing_look, fib["left"], fib["right"])
     return grid, frames
 
 
@@ -144,7 +160,7 @@ GRID_CACHE_DIR = "grid_cache"
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                      exit_cols, gstop, ghold, gtarget, atr_len, swing_look,
-                     db_mtime):
+                     db_mtime, fib=None):
     """A file path uniquely determined by every input build_grid consumes.
     Same key <-> byte-identical grid, so a cache hit is always trustworthy.
     db_mtime is in the filename (not just the hash) so stale-data grids are
@@ -155,6 +171,7 @@ def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
         "cutoff": None if cutoff is None else pd.Timestamp(cutoff).isoformat(),
         "exit_cols": exit_cols or [], "gstop": gstop, "ghold": ghold,
         "gtarget": gtarget, "atr_len": atr_len, "swing_look": swing_look,
+        "fib": {**FIB_DEFAULTS, **(fib or {})},
     }, sort_keys=True, default=str)
     h = hashlib.sha1(payload.encode()).hexdigest()[:16]
     return os.path.join(GRID_CACHE_DIR,
@@ -183,7 +200,7 @@ def _load_grid(path):
 def prepare_grid_cached(strategies, interval="15m",
                         gate_arg="minervini@1d,above_50ma@4h", market="none",
                         months=0, exit_cols=None, gstop=None, ghold=None,
-                        gtarget=None, atr_len=14, swing_look=20):
+                        gtarget=None, atr_len=14, swing_look=20, fib=None):
     """prepare_grid with a disk cache: pay the ~grid-build once per
     (strategies, gate, market, interval, window, params, DB-data) tuple, then
     every later sweep loads the 2D grid in ~a second. Returns
@@ -193,12 +210,12 @@ def prepare_grid_cached(strategies, interval="15m",
               if months else None)
     path = _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                             exit_cols, gstop, ghold, gtarget, atr_len,
-                            swing_look, int(os.path.getmtime(DB_PATH)))
+                            swing_look, int(os.path.getmtime(DB_PATH)), fib)
     if os.path.exists(path):
         return _load_grid(path), True
     grid, _frames = prepare_grid(
         strategies, interval, gate_arg, market, months, exit_cols, gstop,
-        ghold, gtarget, atr_len, swing_look, cutoff=cutoff)
+        ghold, gtarget, atr_len, swing_look, cutoff=cutoff, fib=fib)
     _save_grid(path, grid)
     # drop grids built against older DB data for this interval
     mtoken = os.path.basename(path).rsplit("_", 1)[0]  # grid_<int>_<mtime>
@@ -227,15 +244,29 @@ def main():
     ghold = arg(args, "hold", None)
     ghold = int(ghold) if ghold not in (None, "none", "") else None
     # stop placement: pct (fixed %), atr (entry - mult*ATR), swing (below the
-    # recent swing low - buffer, i.e. under support). atr/swing avoid the
-    # noise-tagging that a fixed 3% stop suffers.
+    # recent swing low - buffer, i.e. under support), fib (below the fib
+    # retracement of the last up-leg). atr/swing/fib avoid the noise-tagging
+    # that a fixed 3% stop suffers.
     stop_mode = arg(args, "stop-mode", "pct")
     atr_len = int(arg(args, "atr-len", "14"))
     atr_mult = float(arg(args, "atr-mult", "2.5"))
     swing_look = int(arg(args, "swing-look", "20"))
     swing_buf = float(arg(args, "swing-buf", "0.005"))
-    # trailing stop: once a trade is up +trail_act, ratchet the stop to
-    # trail_dist below the high-water mark (only ever raises). None = off.
+    # fib stop: auto-fib the last confirmed up-leg (pivot low -> pivot high);
+    # stop sits fib-buf below the fib-stop retracement (e.g. 0.786 = below the
+    # 78.6% level). --fib-target uses the prior pivot high as the take-profit.
+    # left/right (pivot window) are baked into the grid; stop-ratio/buf are
+    # applied at sim time (cheaply sweepable).
+    fib = {"left": int(arg(args, "fib-left", "5")),
+           "right": int(arg(args, "fib-right", "5"))}
+    fib_stop_ratio = float(arg(args, "fib-stop", "0.786"))
+    fib_buf = float(arg(args, "fib-buf", "0.005"))
+    use_fib_target = 1 if arg(args, "fib-target", "0") not in \
+        ("0", "no", "false", "none", "") else 0
+    # trailing stop: once a trade is up +trail_act, ratchet the stop up. Mode
+    # pct = trail_dist below the high-water mark; structure = under the last
+    # confirmed swing low (fixes winners shaken out by a fixed %). None = off.
+    trail_mode = arg(args, "trail-mode", "pct")
     trail_act = arg(args, "trail-activate", None)
     trail_act = float(trail_act) if trail_act not in (None, "none", "") else None
     trail_dist = float(arg(args, "trail-dist", "0.03"))
@@ -284,19 +315,25 @@ def main():
     # numba is the default engine; --engine=loop keeps the original Python
     # loop reachable as a reference implementation to cross-check against.
     engine = arg(args, "engine", "numba")
+    if engine == "loop" and (stop_mode == "fib" or trail_mode == "structure"):
+        fail("--engine=loop does not implement fib stops / structure trailing "
+             "(numba-only); drop --engine=loop or use --stop-mode=pct/atr/swing")
     if engine == "numba":
         import time as _time
         _t = _time.time()
         A, V, ENT, SIDX, EXT, syms, master, st_stop, st_hold, st_tgt = \
             build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
-                       atr_len, swing_look)
+                       atr_len, swing_look, fib["left"], fib["right"])
         res = portsim.simulate(
             A["O"], A["H"], A["L"], A["C"], V, ENT, A["SCORE"], SIDX, EXT,
             A["ATR"], A["SW"], st_stop, st_hold, st_tgt,
             stop_mode=STOP_MODES.get(stop_mode, 0), atr_mult=atr_mult,
             swing_buf=swing_buf, trail_act=trail_act or 0.0,
             trail_dist=trail_dist, cost_side=cost_side, max_pos=max_pos,
-            init_cash=capital)
+            init_cash=capital, fib_hi=A["FIB_HI"], fib_lo=A["FIB_LO"],
+            fib_stop_ratio=fib_stop_ratio, fib_buf=fib_buf,
+            trail_mode=TRAIL_MODES.get(trail_mode, 0),
+            use_fib_target=use_fib_target)
         why = {1: "stop", 2: "trail", 3: "target", 4: "signal", 5: "time",
                6: "eod"}
         trades = [{"symbol": syms[res["sym"][i]],
@@ -320,7 +357,11 @@ def main():
             f"BOT[numba]: {len(strategies)} strat gate={gate_arg} market={market}"
             f" interval={interval} max_pos={max_pos} "
             f"cost={cost_side * 2 * 10000:.0f}bps stop={stop_mode}"
-            + (f" trail={trail_act:.0%}@{trail_dist:.0%}" if trail_act else "")
+            + (f"({fib_stop_ratio:.3f})" if stop_mode == "fib" else "")
+            + (" tp=fib" if use_fib_target and stop_mode == "fib" else "")
+            + (f" trail={trail_mode}" if trail_mode == "structure"
+               else f" trail={trail_act:.0%}@{trail_dist:.0%}" if trail_act
+               else "")
             + (f" window=last {months}mo" if months else "") + f"  ({secs:.1f}s)",
             f"period: {eq.index[0].date()} -> {eq.index[-1].date()}  "
             f"universe={len(syms)}",

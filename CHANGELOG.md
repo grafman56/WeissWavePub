@@ -5,6 +5,18 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Fib / structure stops** (`--stop-mode=fib`, `weisswave/structure.py`):
+  auto-fib the last confirmed up-leg (swing low -> swing high) and stop below
+  the `--fib-stop` retracement (0.786 / 0.618); `--fib-target` takes profit at
+  the prior swing high; `--trail-mode=structure` trails under each new higher
+  swing low instead of a fixed % (fixes winners exiting too early). Pivots are
+  confirmation-lagged (reusing the tested Pine pivot functions), so the levels
+  use no future bars. The grid stores the raw swing-high/low ladders; the fib
+  ratio, buffer, target and trail-mode are applied at sim time, so they sweep
+  cheaply — only the pivot window (`--fib-left/--fib-right`) rebuilds the grid.
+  `--engine=loop` rejects fib/structure (numba-only) rather than silently
+  downgrading. Trust suite: `test_structure.py` (incl. a no-lookahead proof)
+  plus new FIB/structure-trail scenarios in `test_portsim.py`.
 - **Grid disk cache** (`sweep.py` / `portfolio_multi.prepare_grid_cached`):
   the sweep's slow step — building the 2D signal grid — is now memoized to
   `grid_cache/` keyed on strategies, gates, market, interval, window, params,

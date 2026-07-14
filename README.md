@@ -29,6 +29,7 @@ weisswave/
   weiswave.py    Weis Wave engine: wave, opp counter, volumeup/volumedn,
                  up/down switch & continue states, pressure tiers
   divergence.py  fractal divergences + Pine pivot divergences
+  structure.py   confirmed swing pivots + fib retracement levels (fib stop)
   combined.py    PROPRIETARY (not in this repo): the experience-driven
                  signal suite. The package detects its absence and runs
                  with the open signal set only.
@@ -55,6 +56,7 @@ test_weiswave.py invariant tests for the wave engine
 test_engine.py   trust tests for the backtest engine (fills/no-lookahead/...)
 test_portsim.py  trust tests for the unified numba portfolio engine
 test_gridcache.py trust tests for the sweep's grid disk cache
+test_structure.py trust tests for swing pivots / fib levels (no lookahead)
 ```
 
 ## Dashboard
@@ -158,9 +160,15 @@ python sweep.py --months=12 --stop-mode=swing,atr \
   higher-timeframe bar — no lookahead.
 - `--months=N` restricts trading to the last N months for fast iteration;
   promote survivors to a full-history run.
-- Exits: fixed-% / ATR / swing-low stops, a profit target, trailing and
-  ratchet ("lock a gain once up X%") stops, a reversal exit signal, or a
+- Exits: fixed-% / ATR / swing-low / **fib** stops, a profit target, trailing
+  and ratchet ("lock a gain once up X%") stops, a reversal exit signal, or a
   max-hold — whichever triggers first.
+- `--stop-mode=fib` auto-fibs the last confirmed up-leg (swing low -> swing
+  high) and stops just below the `--fib-stop` retracement (e.g. 0.786 = under
+  the 78.6% level); `--fib-target` takes profit at the prior swing high, and
+  `--trail-mode=structure` trails the stop under each new higher swing low
+  instead of a fixed % — the fix for winners getting shaken out early. The
+  pivots are confirmation-lagged, so the levels use no future bars.
 - Everything is benchmarked against simply *holding the traded names* over
   the same window, so "active trading beat buy-and-hold" is an honest test.
 
@@ -179,6 +187,9 @@ hand-built scenarios whose correct answers are known by construction:
 - `test_gridcache.py` — the sweep's grid disk cache: a save/load round-trip
   reproduces every array (dtypes, symbols, timestamps) exactly, and the cache
   key changes iff a build input changes, so a hit can't return a stale grid.
+- `test_structure.py` — swing pivots / fib levels: known pivots map to known
+  fib stops, and a prefix-recompute check proves the level at bar t uses only
+  bars <= t (no lookahead — the same standard the fib stop is held to).
 
 The numba engine (`portsim.py`) reproduces the original Python simulator
 byte-for-byte on real data, then runs fast enough to sweep thousands of

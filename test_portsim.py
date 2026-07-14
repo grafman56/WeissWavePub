@@ -8,7 +8,8 @@ import sys
 
 import numpy as np
 
-from weisswave.portsim import simulate, STOP, TARGET, TIME, TRAIL
+from weisswave.portsim import (simulate, STOP, TARGET, TIME, TRAIL, FIB,
+                               TRAIL_STRUCT)
 
 FAILS = []
 
@@ -109,6 +110,59 @@ check("higher score wins the slot", len(r["sym"]) and r["sym"][0] == 1,
       f"winner sym={r['sym']}")
 check("max invested never exceeds 100%", r["invested"].max() <= 1.0 + 1e-9,
       f"max_inv={r['invested'].max():.3f}")
+
+
+# 7. FIB stop = H - ratio*(H-L) below entry, from the H/L ladders ------------
+o, h, l, c = grid([[(10, 10, 10, 10)], [(12, 12, 12, 12)], [(12, 12, 12, 12)],
+                   [(12, 12, 9, 12)]])
+ent = [[True], [False], [False], [False]]
+fib_hi = np.full((4, 1), np.nan); fib_hi[0, 0] = 11.0   # H, read at entry
+fib_lo = np.full((4, 1), np.nan); fib_lo[0, 0] = 8.0    # L
+# entry 12; stop = (11 - 0.5*(11-8))*(1-0) = 9.5; bar3 low 9 -> fill 9.5
+r = run(o, h, l, c, ent, stop_mode=FIB, fib_hi=fib_hi, fib_lo=fib_lo,
+        fib_stop_ratio=0.5, fib_buf=0.0)
+check("FIB stop = H - ratio*(H-L), fills at 9.5",
+      len(r["ret"]) == 1 and abs(r["ret"][0] - (9.5/12 - 1)) < 1e-9
+      and r["reason"][0] == STOP, f"ret={r['ret']} reason={r['reason']}")
+
+# 8. FIB with no confirmed up-leg (H/L NaN) falls back to the pct stop --------
+nan1 = np.full((4, 1), np.nan)
+r = run(o, h, l, c, ent, stop_mode=FIB, fib_hi=nan1, fib_lo=nan1, stop=0.10)
+# fallback = 12*(1-0.10) = 10.8; bar3 low 9 -> fill 10.8
+check("FIB NaN -> pct-stop fallback (10.8)",
+      len(r["ret"]) == 1 and abs(r["ret"][0] - (10.8/12 - 1)) < 1e-9
+      and r["reason"][0] == STOP, f"ret={r['ret']}")
+
+# 9. fib target = prior pivot high H (absolute price above entry) -------------
+o, h, l, c = grid([[(10, 10, 10, 10)], [(11, 11, 11, 11)], [(11, 11, 11, 11)],
+                   [(11, 13, 11, 11)]])
+ent = [[True], [False], [False], [False]]
+fh = np.full((4, 1), np.nan); fh[0, 0] = 13.0    # H > entry 11
+r = run(o, h, l, c, ent, stop_mode=FIB, fib_hi=fh, fib_lo=nan1,
+        use_fib_target=1)   # fib_lo NaN -> stop falls back (won't trigger)
+check("fib target fills at prior pivot high (13)",
+      len(r["ret"]) == 1 and abs(r["ret"][0] - (13/11 - 1)) < 1e-9
+      and r["reason"][0] == TARGET, f"ret={r['ret']} reason={r['reason']}")
+
+# 10. fib target H BELOW entry is ignored (no backwards target) --------------
+fh_lo = np.full((4, 1), np.nan); fh_lo[0, 0] = 10.0    # H below entry 11
+r = run(o, h, l, c, ent, stop_mode=FIB, fib_hi=fh_lo, fib_lo=nan1,
+        use_fib_target=1, hold=2)
+check("fib target H <= entry is dropped (exits by time, not target)",
+      len(r["ret"]) == 1 and r["reason"][0] == TIME, f"reason={r['reason']}")
+
+# 11. structure trailing ratchets under rising swing lows (fib_lo) -----------
+o, h, l, c = grid([[(10, 10, 10, 10)], [(10, 10, 10, 10)], [(10, 12, 10, 12)],
+                   [(12, 12, 11, 11)], [(11, 11, 10.7, 11)]])
+ent = [[True], [False], [False], [False], [False]]
+# fib_lo[t-1] is the swing low the stop trails under at bar t; rises 9 -> 10.8
+flo = np.array([[np.nan], [9.0], [9.0], [10.8], [10.8]])
+r = run(o, h, l, c, ent, stop=0.20, trail_mode=TRAIL_STRUCT, fib_lo=flo,
+        swing_buf=0.0)
+# stop ratchets to fib_lo[3]=10.8 by bar4; low 10.7 <= 10.8 -> exit 10.8 (+8%)
+check("structure trail exits under the swing low, locking a gain",
+      len(r["ret"]) == 1 and abs(r["ret"][0] - (10.8/10 - 1)) < 1e-9
+      and r["reason"][0] == TRAIL, f"ret={r['ret']} reason={r['reason']}")
 
 
 if __name__ == "__main__":

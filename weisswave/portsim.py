@@ -22,17 +22,20 @@ from numba import njit
 
 # exit reason codes
 STOP, TRAIL, TARGET, SIGNAL, TIME, EOD = 1, 2, 3, 4, 5, 6
-# stop modes
-PCT, ATR, SWING = 0, 1, 2
+# stop-placement modes (how the initial stop is set at entry)
+PCT, ATR, SWING, FIB = 0, 1, 2, 3
+# trailing modes (how the stop ratchets once in profit)
+TRAIL_PCT, TRAIL_STRUCT = 0, 1
 
 
 @njit(cache=True)
 def _simulate(open2d, high2d, low2d, close2d, valid,
               ent, score, sidx, ext,
-              atr, swing,
+              atr, swing, fib_hi, fib_lo,
               strat_stop, strat_hold, strat_target,
               stop_mode, atr_mult, swing_buf,
-              trail_act, trail_dist,
+              fib_stop_ratio, fib_buf,
+              trail_act, trail_dist, trail_mode, use_fib_target,
               cost_side, max_pos, init_cash):
     T, S = open2d.shape
     cash = init_cash
@@ -69,10 +72,19 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
             if not held[s] or not valid[t, s]:
                 continue
             p_held[s] += 1
-            # trailing: ratchet stop up under the high-water mark
-            if trail_act > 0.0 and p_hwm[s] >= p_entry[s] * (1.0 + trail_act):
-                cand = p_hwm[s] * (1.0 - trail_dist)
-                if cand > p_stop[s]:
+            # trailing: ratchet the stop up once the trade is in profit.
+            #   pct       -> under the high-water mark (fixed distance)
+            #   structure -> under the last confirmed swing low (fib_lo), which
+            #                fixes winners getting shaken out by a fixed %.
+            # structure-trail is on whenever trail_mode==STRUCT; pct-trail
+            # needs trail_act>0 (its original gate, unchanged).
+            do_trail = (trail_mode == TRAIL_STRUCT) or (trail_act > 0.0)
+            if do_trail and p_hwm[s] >= p_entry[s] * (1.0 + trail_act):
+                if trail_mode == TRAIL_STRUCT:
+                    cand = fib_lo[t - 1, s] * (1.0 - swing_buf)
+                else:
+                    cand = p_hwm[s] * (1.0 - trail_dist)
+                if np.isfinite(cand) and cand > p_stop[s]:
                     p_stop[s] = cand
             xpx = -1.0
             reason = 0
@@ -142,8 +154,21 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                         stop_px = base - atr_mult * atr[t - 1, s]
                     elif stop_mode == SWING:
                         stop_px = swing[t - 1, s] * (1.0 - swing_buf)
+                    elif stop_mode == FIB:
+                        # below the fib retracement of the last up-leg L->H:
+                        # H - ratio*(H-L), then a small buffer under it. A
+                        # valid up-leg needs H>L; otherwise NaN -> pct fallback.
+                        H = fib_hi[t - 1, s]
+                        L = fib_lo[t - 1, s]
+                        if H > L:
+                            stop_px = (H - fib_stop_ratio * (H - L)) \
+                                * (1.0 - fib_buf)
+                        else:
+                            stop_px = np.nan
                     else:
                         stop_px = base * (1.0 - strat_stop[si])
+                    # any invalid/degenerate placement (incl. FIB with no
+                    # confirmed up-leg yet -> NaN, or H<=L) falls back to pct
                     if (not np.isfinite(stop_px)) or stop_px >= base:
                         stop_px = base * (1.0 - strat_stop[si])
                     shares = alloc / px
@@ -152,8 +177,14 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                     p_shares[s] = shares
                     p_entry[s] = px
                     p_stop[s] = stop_px
+                    # target: fib target = prior pivot high H (an absolute
+                    # price) when enabled and above entry; else per-strategy %.
                     tgt = strat_target[si]
-                    p_tp[s] = base * (1.0 + tgt) if tgt > 0.0 else 0.0
+                    if use_fib_target and stop_mode == FIB:
+                        H = fib_hi[t - 1, s]
+                        p_tp[s] = H if (np.isfinite(H) and H > base) else 0.0
+                    else:
+                        p_tp[s] = base * (1.0 + tgt) if tgt > 0.0 else 0.0
                     p_hold[s] = strat_hold[si]
                     p_held[s] = 0
                     p_hwm[s] = base
@@ -176,19 +207,30 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
              atr, swing, strat_stop, strat_hold, strat_target,
              stop_mode=PCT, atr_mult=2.5, swing_buf=0.005,
              trail_act=0.0, trail_dist=0.03,
-             cost_side=0.0, max_pos=5, init_cash=100000.0):
+             cost_side=0.0, max_pos=5, init_cash=100000.0,
+             fib_hi=None, fib_lo=None, fib_stop_ratio=0.786, fib_buf=0.005,
+             trail_mode=TRAIL_PCT, use_fib_target=0):
     """Python wrapper: ensures dtypes/contiguity, runs the njit core.
     Returns dict with sym, ret, reason, bars (per-trade) and equity/invested
     (per-bar). All 2D inputs are (T, S) float64/bool; strat_* are 1D per
-    strategy; sidx/ent/score/ext/atr/swing are (T, S)."""
+    strategy; sidx/ent/score/ext/atr/swing are (T, S). fib_hi/fib_lo are the
+    (T, S) confirmed swing-high / swing-low ladders; the engine forms the fib
+    stop (H - ratio*(H-L), buffered), target (H) and structure trail (under L)
+    from them at sim time (default zeros = FIB unused)."""
     f = lambda a: np.ascontiguousarray(a, np.float64)
     b = lambda a: np.ascontiguousarray(a, np.bool_)
     i = lambda a: np.ascontiguousarray(a, np.int64)
+    z = np.zeros_like(f(open2d))
+    fhi = z if fib_hi is None else f(fib_hi)
+    flo = z if fib_lo is None else f(fib_lo)
     out = _simulate(f(open2d), f(high2d), f(low2d), f(close2d), b(valid),
                     b(ent), f(score), i(sidx), b(ext), f(atr), f(swing),
+                    fhi, flo,
                     f(strat_stop), i(strat_hold), f(strat_target),
                     int(stop_mode), float(atr_mult), float(swing_buf),
+                    float(fib_stop_ratio), float(fib_buf),
                     float(trail_act), float(trail_dist),
+                    int(trail_mode), int(use_fib_target),
                     float(cost_side), int(max_pos), float(init_cash))
     sym, ret, reason, bars, strat, equity, invested, n_open = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,
