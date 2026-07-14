@@ -5,6 +5,17 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Crypto universe + agent search.** `binance_fetch.py` backfills crypto from
+  Binance's public data archive (no account; the live API is US-geo-blocked but
+  the archive CDN is not) into the shared `prices` table; `--universe=crypto`
+  selects it. `agent_search.py` is the agent-scale search: it loads the cached
+  grid once, seeds random configs, then evolves the best (elitism + mutation)
+  over the weight/exit space, optimizing a **robustness-aware walk-forward
+  fitness** (mean per-fold excess over buy-and-hold, penalized for any fold
+  that blows up), and persists every config to `sweep_results/`. First finding:
+  on stocks active trading loses to buy-and-hold across walk-forward; on crypto
+  it beats it (+64% mean excess, fib stop + loose pct trail) — crypto crashes,
+  so active stops earn their keep where holding does not.
 - **Killed the time-clock exit (default hold=0).** The strategy file baked
   `hold=78` (78 15m bars = exactly 3 trading days), and it was force-closing
   ~81% of trades on a clock — overriding the stop/target/trailing/reversal
