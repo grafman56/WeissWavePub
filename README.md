@@ -33,6 +33,10 @@ weisswave/
                  up/down switch & continue states, pressure tiers
   divergence.py  fractal divergences + Pine pivot divergences
   structure.py   confirmed swing pivots + fib retracement levels (fib stop)
+  rci.py         "Regression Channel Trend Detection": ichimoku cloud breaks,
+                 an adaptive regression channel, and the superheat read.
+                 Its adaptation rate is timeframe-scaled by design
+                 (daily .10 -> 30m .02), inferred from the bar spacing.
   combined.py    PROPRIETARY (not in this repo): the experience-driven
                  signal suite. The package detects its absence and runs
                  with the open signal set only.
@@ -52,6 +56,16 @@ test_strategy.py one-command backtest harness (any combo/gate/exit/interval)
 portfolio_multi.py  multi-strategy portfolio bot sim (stacked trend gates,
                  stop modes, trailing/ratchet, market-regime filter)
 sweep.py         fast exit-parameter sweep: build grid once, run many configs
+search_space.json  THE SEARCH SPACE AS DATA: every bound, default, mutation
+                 rate and sim literal the search uses. Nothing is hard-coded
+                 in Python; edit this to change what is discoverable.
+search_space.py  loads/samples/mutates that spec (--space=FILE, --set=a.b=v)
+agent_search.py  evolutionary search over the config space, scored on
+                 walk-forward excess vs buy-and-hold AND vs the best textbook
+                 strategy; --jobs fans configs across processes
+orchestrate.py   runs many search jobs (locally or via local LLM agents) and
+                 curates the double-gate survivors
+binance_fetch.py crypto backfill from Binance's public archive (no account)
 finder_gated.py  discover low-timeframe setups inside a higher-TF trend
 scan_today.py    nightly setup scanner (post-close, from strategies.json)
 app.py           Streamlit dashboard (fetch, charts, event study, backtests)
@@ -60,6 +74,19 @@ test_engine.py   trust tests for the backtest engine (fills/no-lookahead/...)
 test_portsim.py  trust tests for the unified numba portfolio engine
 test_gridcache.py trust tests for the sweep's grid disk cache
 test_structure.py trust tests for swing pivots / fib levels (no lookahead)
+test_rci.py      trust tests for the RCI (channel ordering, warmup, TF ladder)
+test_search_space.py  regression tests pinning bugs that silently corrupted
+                 results rather than crashing (see "Bugs worth a test")
+```
+
+Note the four older suites (`test_engine`, `test_portsim`, `test_structure`,
+`test_gridcache`) are plain scripts, not `unittest` — run them directly and
+check the exit code. `python -m unittest test_engine` will import them, print
+their PASS lines as a side effect, and report OK **even if they failed**:
+
+```bash
+for f in test_engine test_portsim test_structure test_gridcache; do python $f.py || echo "$f FAILED"; done
+python -m unittest test_rci test_search_space test_weiswave
 ```
 
 ## Dashboard
@@ -120,6 +147,43 @@ scored by forward-return edge versus the all-bars baseline.
 Signal computation over the full universe is cached per parameter set —
 the first run takes a minute, tweaks after that are fast.
 
+### Beating buy-and-hold is not enough
+
+Buy-and-hold is a lazy baseline. The honest question is whether a strategy beats
+what is **already publicly taught** — so `agent_search` also runs
+`golden_cross`, `macd_cross_up`, `rsi_oversold_cross` and `above_50ma` through
+the *same* engine, stops, costs and position caps, ungated as they are actually
+taught, and reports `wf_ms_exc` / `holdout_ms_exc` = the config's CAGR minus the
+best of them. Computed once per fold, never per config, so the bar can't drift
+under the search's feet.
+
+> The exits the benchmark strategies are given are currently an **unapproved
+> placeholder** (a hard stop, no trail) and are flagged as such in
+> `search_space.json`. A benchmark's result is partly an artifact of the exit
+> you hand it, so these numbers are not findings yet.
+
+### The honesty chain
+
+Each link catches something the previous one misses:
+
+1. **excess over buy-and-hold** — beating the market, not just making money
+2. **walk-forward folds** — surviving regimes, not one lucky window
+3. **a held-out slice** — the search never sees it; scored once, at the end
+4. **the double gate** (`orchestrate.survivors`) — a survivor must be robust in
+   training **and** positive on the holdout. Holdout-positive alone is one lucky
+   period; train-robust alone is a curve fit.
+
+This chain is what catches the mirages. Across every accumulated search, configs
+posting +200-500% in training collapsed on the holdout; exactly one survived
+both gates.
+
+> **Known weakness, stated plainly:** the holdout is a *single fixed slice*, and
+> every config ever scored against it spends a little of its evidential value.
+> One config passes both gates today partly because the space is small. Search
+> it 100x harder and roughly 100 would pass on luck alone, indistinguishable
+> from real edge. Rolling/nested validation is the fix and is **not built yet**
+> — it is the precondition for turning agents loose at scale.
+
 ## CLI usage
 
 ```
@@ -132,7 +196,14 @@ python run_study.py                  # event study over every symbol in the DB
 python run_study.py AAPL MSFT        # subset
 python run_study.py --interval=1h    # hourly bars
 python run_study.py --demo           # synthetic smoke test (no data needed)
+
+python binance_fetch.py              # crypto backfill from Binance's public
+                                     # archive (no account, no API key)
 ```
+
+Crypto lives in the same DuckDB table, selected with `--universe=crypto`.
+Only 15m and 1d are fetched, so crypto runs need `--gate=...@1d` — the default
+4h gate has no data to stand on and would drop every symbol.
 
 ## Command-line backtesting
 
@@ -206,16 +277,59 @@ python sweep.py --months=12 --stop-mode=fib --conf-entry \
     --w-signal=0,1,2 --w-trend=0,1 --w-fib_prox=0,2 --conf-threshold=1.0,1.5
 ```
 
-Current factors: `signal` (strategy-confluence count), `trend` (higher-TF
+Current entry factors: `signal` (strategy-confluence count), `trend` (higher-TF
 uptrend, a signed soft-veto), `fib_prox` (closeness to a fib retracement
-level), `dip_bias` (where price sits in its recent range: +1 near the lows,
--1 extended near the highs — the "don't buy the top" / dangerous-range read,
-adapted from the RCI trend indicator), `vol_dom` (WTV volume dominance —
-graded +heavy-buying / -heavy-selling, the volume confirmation from the
-WaveTrend-with-Volume port), `div` (WTV bull/bear divergence confluence over
-a recent window). Adding a factor is one array in `build_grid` + its name in
-`FACTOR_NAMES` — it's then instantly weightable and sweepable. `--conf-size`
-scales position size by the score (stronger confluence = bigger position).
+level), `range_pos` (where price sits in its recent 20-bar range: +1 near the
+lows, -1 extended near the highs), `vol_dom` (WTV volume dominance — graded
++heavy-buying / -heavy-selling), `div` (WTV bull/bear divergence confluence),
+`rci_trend` (the RCI ichimoku read: cloud break > plain trend, signed),
+`rci_heat` (how far price has stretched above the adaptive channel's lower
+band — the real "dangerous range", signed negative when overextended).
+Adding a factor is one array in `build_grid` + its name in `FACTOR_NAMES` —
+it's then instantly weightable and sweepable. `--conf-size` scales position
+size by the score (stronger confluence = bigger position).
+
+`rci_heat` is fed as a **continuous** value rather than the study's 25/35
+chart thresholds: those are calibrated for daily charts and sit above the 99th
+percentile of heat on 15m, so a boolean would never fire on the timeframe the
+bot trades. The search finds its own threshold instead.
+
+### The gate is a dial, not a law
+
+`--gate=minervini@1d` selects *which criteria* the daily trend means;
+`gate_mode` decides *how much authority* it has:
+
+- `hard` — the gate ANDs the strategy signal. A bar outside the daily uptrend
+  can never be an entry, and no weight can escape it. What the CLI tools use.
+- `factor` — the signal is left ungated and the trend travels **only** via the
+  weighted `trend` factor. `w_trend=0` ignores the trend entirely; a large
+  `w_trend` with a coupled threshold reproduces the hard gate exactly
+  (verified: identical trade counts); in between is a soft tilt.
+
+`factor` mode is a strict superset — the old behaviour is one reachable point
+in the space rather than a decision baked into the grid. It is also the only
+way to test setups that *deliberately* trade against the trend (timing a major
+downtrend reversal), which a hard gate vetoes by definition.
+
+### The fib anchor is a dimension
+
+Fib levels are only as good as the two (or three) points they're drawn from,
+and **when the anchor is allowed to move changes what the levels mean.** On the
+trading timeframe the anchor re-picks itself roughly every 34 bars; anchored on
+the weekly it moved *once* across a 12-month window — which is how these levels
+behave on a chart, where one anchor stays useful for months.
+
+So `fib_anchor` ∈ `{self, 4h, 1d, 1w}` is a grid dimension (default `1d`).
+Higher timeframes are stronger evidence, but lower ones stay reachable so
+day-trading setups remain testable. Which one wins is a job-per-anchor
+comparison, not an assumption — `grid_sig` keeps them apart so results computed
+under different anchors can never be silently compared. A higher-TF anchor is
+shifted to that bar's **close** before being forward-filled onto the trading
+grid, so a 15m bar can't see a pivot from a day that hasn't finished.
+
+*Known limitation:* one anchor per grid. A single config can't yet weigh a
+weekly level and a 15m level simultaneously — that needs `fib_prox_<tf>` as
+separate weighted factors, which would make `FACTOR_NAMES` spec-driven.
 
 **Higher-timeframe setup screen (the cascade).** The `htf_*` factors are
 computed on the **weekly** timeframe (resampled from the 25-yr daily,
@@ -228,6 +342,98 @@ nearest weekly fib level), and the entry factors above time *when* to trade
 them on the low timeframe — the higher-TF-screens-then-lower-TF-executes
 cascade, both levels tunable. The screen is a soft, tunable gate: a threshold
 on a weighted score, not a hard rule.
+
+## The search engine
+
+`sweep.py` runs a grid you specify. `agent_search.py` **searches** — it seeds
+random configs, then evolves the elite (mutation + elitism) against the one
+metric that can't be gamed: walk-forward excess over buy-and-hold, with the
+best textbook strategy as a second bar.
+
+```bash
+# evolutionary search: 400 random seeds x 6 generations, 6 walk-forward folds
+python agent_search.py --universe=crypto --iters=400 --gens=6
+
+# fan configs across processes (see the throughput note below)
+python agent_search.py --jobs=8
+
+# compare fib anchors: one job per anchor, grid_sig keeps them apart
+python agent_search.py --fib-anchor=1w
+python agent_search.py --fib-anchor=self
+
+# test the trend gate instead of obeying it
+python agent_search.py --gate-mode=factor --gate=rci_bull@1d
+
+# bend one knob without editing the spec; or swap the whole space
+python agent_search.py --set=space.weights.hi=6 --set=fitness.min_trades=20
+python agent_search.py --space=my_space.json
+
+# run many jobs and curate the double-gate survivors
+python orchestrate.py --universe=crypto --seeds=1,2,3,4
+python orchestrate.py --via-agents --seeds=1,2   # local LLM agents run them
+```
+
+### Nothing is hard-coded
+
+Every bound, default, mutation rate and sim literal lives in
+`search_space.json`. If the search can't sample it, it can't find it — **and it
+won't tell you it was looking through a keyhole.** So the bounds are a decision
+you can read and diff, not a number buried in a function call. Every run records
+the exact space it used (`space_sig`), so a survivor can always be traced back
+to the bar it had to clear.
+
+That includes the things you'd least expect: the entry timeframe, the position
+cap, the weight ceiling, the fitness penalty, and the bar `orchestrate.py` uses
+to call something a survivor.
+
+Thresholds are sampled **relative** to the score the drawn weights can actually
+produce. Sampling them independently lets a config draw muted weights and then a
+threshold that score can never reach — it rejects every bar forever and scores a
+deceptively neutral `0.0`.
+
+### Throughput
+
+Configs within a generation are independent and fan out across processes;
+generations stay sequential (you need the elite before you can mutate it). Each
+worker loads the grid from the disk cache rather than having it pickled through
+the parent, so `--jobs` trades RAM for speed.
+
+Measured on a 12-month crypto grid, 16 cores:
+
+| workload | serial | `--jobs=8` |
+|---|---|---|
+| 450 configs | 148/sec | 115/sec — parallel **loses** |
+| 3200 configs | 192/sec | 455/sec — **2.4x** |
+
+Windows spawns rather than forks, so each worker re-imports numba/pandas,
+re-JITs the engine and reloads the grid: ~5s of fixed startup that never pays
+back below ~1300 configs. More cores is not automatically more speed — 16 jobs
+was slower than 8 here. Measure.
+
+The cost centre is the per-bar position loop (~15ns per bar-slot), *not* factor
+scoring — the entry block is skipped entirely whenever all slots are full, so
+scoring is already lazy. Hoisting it to a BLAS matmul was tried and made things
+**14% slower**, because a matmul over every bar does strictly more work than a
+loop that runs only for candidates. Don't redo it without measuring.
+
+### Bugs worth a test
+
+`test_search_space.py` pins bugs that produced *wrong answers* rather than
+crashes — the only kind that matter here:
+
+- **Doing nothing scored as a tie.** A config that never trades has flat equity
+  *and* an empty traded-names baseline, so its excess computes as `0.0` — which
+  outranked every config that traded and lost. Zero trades is now *unfit*, never
+  neutral.
+- **The dedup key omitted the universe.** `grid_sig` didn't name the universe or
+  the gate mode, so a stocks run could silently reuse a crypto config's score.
+- **A signal-cache key that ignored the signal code.** Keyed on the DB mtime
+  alone, a stale cache would serve frames missing newly added columns — and
+  since a missing gate column *drops* the symbol, asking for a new gate would
+  have quietly emptied the universe instead of erroring.
+- **A factor lying about its own identity.** `dip_bias` was documented as the
+  RCI "dangerous range" while computing price position in a rolling range. It's
+  now honestly named `range_pos`, and the real thing is `rci_heat`.
 
 ## Trust: the engine is tested
 
@@ -247,6 +453,13 @@ hand-built scenarios whose correct answers are known by construction:
 - `test_structure.py` — swing pivots / fib levels: known pivots map to known
   fib stops, and a prefix-recompute check proves the level at bar t uses only
   bars <= t (no lookahead — the same standard the fib stop is held to).
+- `test_rci.py` — the RCI: the channel invariant (`low <= mid <= high`) holds
+  on every bar, bull/bear are mutually exclusive across the sensitivity
+  deadzone, no cloud break fires during the ichimoku warmup, and the timeframe
+  multiplier ladder resolves as specified.
+- `test_search_space.py` — the search space: thresholds are always reachable by
+  construction, widening a bound actually widens sampling, and doing nothing
+  ranks below trading-and-losing.
 
 The numba engine (`portsim.py`) reproduces the original Python simulator
 byte-for-byte on real data, then runs fast enough to sweep thousands of
