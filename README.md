@@ -3,13 +3,18 @@
 > **📊 [RESULTS.md](RESULTS.md) — methodology, honesty guarantees, and the key
 > walk-forward findings** (stocks lose to buy-and-hold; crypto beats it +64%).
 
-A backtesting framework for multi-timeframe intraday trading strategies —
-grown out of a hand-written VectorBT prototype into a self-contained,
-dependency-light engine. It ports the "WaveTrend with Volume" (WTV) and
-"Combined v1 Prod" TradingView studies into a tested signal library, then
-layers a trustworthy, fast simulation engine for turning those signals into
-validated strategies — from single-signal event studies up to a
-multi-strategy portfolio bot.
+A backtesting framework for multi-timeframe intraday trading strategies.
+
+The strategy layer is a set of PineScript studies I wrote and traded over
+several years — "WaveTrend with Volume" (WTV), "Regression Channel Trend
+Detection" (RCI), and the Combined suite — which I then ported to Python by
+hand, one study at a time. An early prototype leaned on VectorBT for a few
+specific functions (the pattern-similarity search chief among them); those were
+replaced with an owned, tested, numba-compiled engine, so the whole stack is
+now self-contained and dependency-light. On top of that sits a simulation and
+search engine for turning signals into validated strategies — from
+single-signal event studies up to a multi-strategy portfolio bot and an
+evolutionary search over the config space.
 
 The core idea is a top-down cascade: a higher timeframe (daily/4h trend, or
 a market-wide regime filter) decides *which* stocks are worth trading and
@@ -28,7 +33,7 @@ fill/stop/trailing logic can't drift between callers).
 ```
 weisswave/
   core.py        ema/sma/rma/rsi, Pine rising()/falling(), cross helpers
-  wavetrend.py   LazyBear WaveTrend (wt1/wt2, crosses)
+  wavetrend.py   WaveTrend oscillator (wt1/wt2, crosses)
   weiswave.py    Weis Wave engine: wave, opp counter, volumeup/volumedn,
                  up/down switch & continue states, pressure tiers
   divergence.py  fractal divergences + Pine pivot divergences

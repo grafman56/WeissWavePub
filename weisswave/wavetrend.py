@@ -1,4 +1,4 @@
-"""LazyBear WaveTrend oscillator — port of the WTV study's core.
+"""WaveTrend oscillator — the core of the "WaveTrend with Volume" (WTV) study.
 
 Pine source:
     ap  = hlc3
