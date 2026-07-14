@@ -23,10 +23,12 @@ import sys
 import numpy as np
 import pandas as pd
 
-from test_strategy import apply_gates, arg, emit, fail, load_universe
+from test_strategy import (GATE_DUR, apply_gates, arg, emit, fail,
+                           load_universe)
 from weisswave import portsim
 from weisswave.db import DB_PATH
 from weisswave.optimize import benchmark_index
+from weisswave.rci import DISPLACEMENT, LAGGING_SPAN2_PERIODS, rci
 from weisswave.signals import combine_signals, recent
 from weisswave.structure import trend_points
 
@@ -48,12 +50,30 @@ FIB_ENTRY_MODES = {"off": portsim.FIB_ENTRY_OFF, "zone": portsim.FIB_ENTRY_ZONE,
 # htf_* factors (the tail) are the higher-TF SETUP screen (which stocks are
 # eligible). HTF_START = count of entry factors; the engine sums entry factors
 # for the entry score and htf factors for the screen score, each thresholded.
-FACTOR_NAMES = ["signal", "trend", "fib_prox", "dip_bias", "vol_dom", "div",
-                "htf_trend", "htf_ema_dist", "htf_fib_prox"]
-HTF_START = 6            # first index of the higher-TF (weekly) factors
+FACTOR_NAMES = ["signal", "trend", "fib_prox", "range_pos", "vol_dom", "div",
+                "rci_trend", "rci_heat",
+                "htf_trend", "htf_ema_dist", "htf_fib_prox", "htf_rci_trend"]
+HTF_START = 8            # first index of the higher-TF (weekly) factors
+# `range_pos` was called `dip_bias` and its comment claimed it was the RCI
+# "dangerous range". It is not -- it is price position in a rolling 20-bar
+# high/low range. Paul's real RCI (adaptive regression channel + ichimoku) is
+# now ported in weisswave/rci.py and enters as rci_trend / rci_heat, with the
+# weekly version as htf_rci_trend. The old name is kept alive only as a rename
+# so nothing silently claims to be the RCI while computing something else.
 SIGNAL_NORM = 3.0        # strategy-confluence count that maps to factor 1.0
 FIB_PROX_BAND = 0.05     # within this frac of the leg span from a level -> ~1
-RNG_LOOK = 20            # lookback for the dip_bias "dangerous range" factor
+RNG_LOOK = 20            # lookback for the range_pos factor
+# GOAL #2's third leg: the time-tested textbook strategies Paul's own signals
+# must be measured against (alongside buy-and-hold). Carried in the grid as an
+# (T, S, len) bool stack so the benchmark runs through the SAME engine, stops
+# and costs as any config -- an apples-to-apples comparison, not a quoted stat.
+MAINSTREAM_COLUMNS = ["golden_cross", "macd_cross_up", "rsi_oversold_cross",
+                      "above_50ma"]
+# rci_heat is normalized by this (% above the channel's lower band -> ~1.0).
+# Paul's chart thresholds are 25 (heated) / 35 (superheated) on DAILY; on 15m
+# the 99th percentile of heat is ~20, so those levels never fire there. 20 maps
+# the live 15m range onto the factor scale; the search tunes the rest.
+RCI_HEAT_NORM = 20.0
 DIV_LOOK = 5             # a WTV divergence stays live for the div factor N bars
 WEEKLY_EMAS = (20, 50, 100, 200)   # Paul's EMA ladder, on the weekly TF
 HTF_EMA_REF = 50         # reference weekly EMA for htf_ema_dist
@@ -66,9 +86,21 @@ FIB_DEFAULTS = {"left": 10, "right": 10}
 
 
 def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
-               atr_len, swing_look, fib_left=10, fib_right=10):
+               atr_len, swing_look, fib_left=10, fib_right=10,
+               gate_mode="hard"):
     """Align all symbols onto a common time grid -> 2D (T x S) arrays for the
     numba engine, plus per-bar best-strategy entry/score/index and stop refs.
+
+    gate_mode decides how the higher-TF trend gate (`--gate`, e.g.
+    minervini@1d) reaches the engine -- it is a CHOICE, not a law:
+      "hard"   : the gate ANDs the strategy signal (a bar outside the daily
+                 uptrend can never be an entry). What the CLI tools expect.
+      "factor" : the signal is left ungated and the trend travels ONLY via the
+                 `trend` factor (+1 in-trend / -1 out, index 1), so its weight
+                 decides how much it matters -- w_trend=0 ignores the trend, a
+                 large w_trend reproduces a gate, between is a soft tilt. Lets
+                 a search TEST the gate instead of being forced into it.
+    Either way `--gate` still selects WHICH criteria the trend means.
     ATR/SW are per-bar stop references; P1/P2/P3 are the three fib-trend
     anchors (leg-start low, swing high, pullback low) the engine forms the fib
     stop/zone/target/extension-trail from at sim time. All lookahead-free —
@@ -83,6 +115,7 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
     A = {k: np.zeros((T, S)) for k in ("O", "H", "L", "C", "SCORE", "ATR",
                                        "SW", "P1", "P2", "P3", "GATE")}
     A["FACTORS"] = np.zeros((T, S, len(FACTOR_NAMES)))   # (T, S, K) factor stack
+    A["MS"] = np.zeros((T, S, len(MAINSTREAM_COLUMNS)))  # textbook benchmarks
     V = np.zeros((T, S), bool)
     ENT = np.zeros((T, S), bool)
     SIDX = np.zeros((T, S), np.int64)
@@ -110,7 +143,14 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         tr = np.maximum(hi - lo, np.maximum(np.abs(hi - pc), np.abs(lo - pc)))
         A["ATR"][pos, j] = pd.Series(tr).rolling(atr_len, min_periods=1).mean()
         A["SW"][pos, j] = pd.Series(lo).rolling(swing_look, min_periods=1).min()
-        p1, p2, p3 = trend_points(sig["High"], sig["Low"], fib_left, fib_right)
+        # fib anchor: from a higher timeframe when attach_fib_anchor supplied
+        # one (the default -- Paul anchors high and those levels persist), else
+        # from the trading TF itself. Both stay testable; see attach_fib_anchor.
+        if "fib_p1" in sig.columns:
+            p1 = sig["fib_p1"]; p2 = sig["fib_p2"]; p3 = sig["fib_p3"]
+        else:
+            p1, p2, p3 = trend_points(sig["High"], sig["Low"],
+                                      fib_left, fib_right)
         A["P1"][pos, j] = p1.to_numpy()          # leg-start swing low
         A["P2"][pos, j] = p2.to_numpy()          # swing high
         A["P3"][pos, j] = p3.to_numpy()          # pullback low (NaN until conf.)
@@ -125,7 +165,9 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
                 continue
             w = int(st.get("window", 5))
             ent = combine_signals(sig, cols, int(st.get("min_count", 1)),
-                                  w).to_numpy(bool) & g
+                                  w).to_numpy(bool)
+            if gate_mode == "hard":
+                ent = ent & g        # veto; in "factor" mode w_trend decides
             score = sum(recent(sig[c], w).astype(int)
                         for c in cols).to_numpy(float)
             better = ent & (score > best_score)
@@ -159,15 +201,31 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
             d = np.abs(cl - lvl) / np.where(okleg, legv, np.nan)
             prox = np.maximum(prox, np.where(
                 okleg, np.maximum(0.0, 1.0 - d / FIB_PROX_BAND), 0.0))
-        # dip_bias: where price sits in its recent range -> the RCI "dangerous
-        # range" read. +1 near the range lows (a dip, good for a long), -1 near
-        # the highs (extended -- don't buy the top). A tunable soft filter.
+        # range_pos: where price sits in its recent RNG_LOOK-bar high/low range.
+        # +1 near the range lows (a dip, good for a long), -1 near the highs
+        # (extended). Honest name: this is a plain range-position proxy. It was
+        # called `dip_bias` and documented as the RCI "dangerous range" -- it
+        # never was; the real RCI is rci_heat below (weisswave/rci.py).
         hh = pd.Series(hi).rolling(RNG_LOOK, min_periods=1).max().to_numpy()
         ll = pd.Series(lo).rolling(RNG_LOOK, min_periods=1).min().to_numpy()
         rng = hh - ll
         rng_pos = np.where(rng > 0, (cl - ll) / np.where(rng > 0, rng, 1.0),
                            0.5)
-        dip_bias = np.clip(1.0 - 2.0 * rng_pos, -1.0, 1.0)
+        range_pos = np.clip(1.0 - 2.0 * rng_pos, -1.0, 1.0)
+        # rci_trend: Paul's ichimoku/regression-channel trend, already signed
+        # [-1,1] by the study's own precedence (cloud break > plain ichi trend).
+        rci_tr = (sig["rci_trend"].to_numpy(float) if "rci_trend" in sig.columns
+                  else np.zeros(len(sig)))
+        # rci_heat: the REAL "dangerous range" -- how far ohlc4 has stretched
+        # above the adaptive channel's lower band. Signed so that overextended
+        # is NEGATIVE (a soft "don't buy the top"), never a veto.
+        # Scaled by RCI_HEAT_NORM rather than his 25/35 chart thresholds: those
+        # are calibrated for DAILY and sit above the 99th percentile on 15m, so
+        # a boolean would never fire on the timeframe the bot trades. Feeding
+        # the continuous value lets the search find its own threshold.
+        heat = (sig["rci_heat"].to_numpy(float) if "rci_heat" in sig.columns
+                else np.zeros(len(sig)))
+        rci_ht = -np.clip(np.nan_to_num(heat) / RCI_HEAT_NORM, 0.0, 1.0)
         # vol_dom: WTV volume-dominance, graded signed (+ heavy buying already
         # computed by pressure_tiers, - heavy selling). THE volume confirmation
         # -- computed upstream but never wired into what trades until now.
@@ -189,14 +247,22 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         A["FACTORS"][pos, j, 0] = f_signal
         A["FACTORS"][pos, j, 1] = f_trend
         A["FACTORS"][pos, j, 2] = prox
-        A["FACTORS"][pos, j, 3] = dip_bias
+        A["FACTORS"][pos, j, 3] = range_pos
         A["FACTORS"][pos, j, 4] = vd
         A["FACTORS"][pos, j, 5] = dv
+        A["FACTORS"][pos, j, 6] = rci_tr
+        A["FACTORS"][pos, j, 7] = rci_ht
         # higher-TF (weekly) setup factors, pre-attached to the frame by
         # attach_htf (0 when the symbol has no weekly data)
         for fk, name in enumerate(FACTOR_NAMES[HTF_START:], start=HTF_START):
             if name in sig.columns:
                 A["FACTORS"][pos, j, fk] = sig[name].to_numpy(float)
+        # mainstream benchmark entries -- NEVER gated: the textbook strategy is
+        # the honest comparison as it is actually taught, not a version we
+        # quietly improved with our own trend filter.
+        for mk, name in enumerate(MAINSTREAM_COLUMNS):
+            if name in sig.columns:
+                A["MS"][pos, j, mk] = sig[name].to_numpy(bool).astype(float)
     return A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt
 
 
@@ -204,9 +270,12 @@ def attach_htf(frames):
     """Attach weekly SETUP factors to each intraday frame, reindexed with only
     weeks that have CLOSED (no lookahead -- and it respects "the weekly close
     is the truth"). Weekly bars are resampled from the 25yr daily data:
-      htf_trend    : weekly EMA-stack alignment (close>20>50>100>200), -1..1
-      htf_ema_dist : distance above/below the reference weekly EMA, -1..1
-      htf_fib_prox : closeness to the nearest weekly fib retracement level
+      htf_trend     : weekly EMA-stack alignment (close>20>50>100>200), -1..1
+      htf_ema_dist  : distance above/below the reference weekly EMA, -1..1
+      htf_fib_prox  : closeness to the nearest weekly fib retracement level
+      htf_rci_trend : Paul's ichimoku/RCI trend read, computed ON THE WEEKLY
+                      bars -- a screen candidate to test head-to-head against
+                      the EMA stack ("which filter works best IS the test").
     These feed the higher-TF screen (which stocks are eligible)."""
     daily = load_universe("1d", None)
     agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last",
@@ -235,9 +304,61 @@ def attach_htf(frames):
             d = (c - (p2 - r * leg)).abs() / leg
             wp = np.maximum(wp, (1.0 - d / FIB_PROX_BAND).clip(lower=0.0)
                             .fillna(0.0))
-        for n, wser in zip(names, (wt, wd, wp)):
+        # weekly RCI (ichimoku + regression channel) -- needs enough weekly
+        # bars for the 52-period span plus its 25-bar displacement
+        if len(w) >= LAGGING_SPAN2_PERIODS + DISPLACEMENT:
+            wr = rci(w, bar_minutes=10080)["rci_trend"]
+        else:
+            wr = pd.Series(0.0, index=w.index)
+        for n, wser in zip(names, (wt, wd, wp, wr)):
             sig[n] = wser.reindex(sig.index, method="ffill").fillna(0.0) \
                 .to_numpy(float)
+    return frames
+
+
+def attach_fib_anchor(frames, anchor, fib_left, fib_right):
+    """Attach the fib TREND ANCHOR (p1/p2/p3) taken from `anchor`'s timeframe,
+    aligned onto each trading-TF frame.
+
+    WHY THIS IS A DIMENSION AND NOT A CONSTANT (Paul, 2026-07-15): he anchors
+    on the higher timeframes -- his BTC anchor (53,422 -> 109,028) was drawn
+    once and its 0.5/0.618 were still catching price seven months later. The
+    trading-TF anchor re-picks itself every ~35 daily bars, so its levels are
+    ones he would never have drawn. Higher TF is therefore the default. But
+    lower-TF anchors stay reachable because day-trading setups must be testable
+    too -- which one wins is a question for the search, not an assumption.
+
+      "self" : anchor on the trading timeframe (the old behaviour)
+      "1d" / "1w" / "4h" ... : anchor on that timeframe, forward-filled
+
+    NO LOOKAHEAD: a higher-TF anchor is knowable only at that bar's CLOSE, so
+    its index is shifted by the bar's duration before the ffill -- the same rule
+    apply_gates uses. Without the shift, a 15m bar at 10:00 would see the whole
+    day's pivot.
+    """
+    if anchor == "self":
+        return frames
+    if anchor == "1w":
+        base = load_universe("1d", None)
+        dur = pd.Timedelta(days=7)
+    else:
+        base = load_universe(anchor, None)
+        dur = GATE_DUR.get(anchor, pd.Timedelta(0))
+    agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last",
+           "Volume": "sum"}
+    for s, sig in frames.items():
+        bu = base.get(s)
+        if bu is None or len(bu) < (fib_left + fib_right + 2):
+            sig["fib_p1"] = np.nan
+            sig["fib_p2"] = np.nan
+            sig["fib_p3"] = np.nan
+            continue
+        hb = bu.resample("W").agg(agg).dropna() if anchor == "1w" else bu
+        p1, p2, p3 = trend_points(hb["High"], hb["Low"], fib_left, fib_right)
+        for nm, ser in (("fib_p1", p1), ("fib_p2", p2), ("fib_p3", p3)):
+            shifted = pd.Series(ser.to_numpy(), index=ser.index + dur)
+            shifted = shifted[~shifted.index.duplicated(keep="last")].sort_index()
+            sig[nm] = shifted.reindex(sig.index, method="ffill").to_numpy(float)
     return frames
 
 
@@ -278,7 +399,8 @@ def prepare_grid(strategies, interval="15m",
                  gate_arg="minervini@1d,above_50ma@4h", market="none",
                  months=0, exit_cols=None, gstop=None, ghold=None,
                  gtarget=None, atr_len=14, swing_look=20, cutoff=None,
-                 fib=None, universe="stocks"):
+                 fib=None, universe="stocks", gate_mode="hard",
+                 fib_anchor="1d"):
     """All the expensive, param-independent work: load -> gate -> market ->
     build 2D grid. Do this ONCE, then sweep exit params via portsim.simulate
     on the returned arrays (each config = a numba call = milliseconds).
@@ -295,20 +417,30 @@ def prepare_grid(strategies, interval="15m",
         frames = apply_gates(frames, gates, None)
     frames = _apply_market(frames, market)
     frames = attach_htf(frames)
+    frames = attach_fib_anchor(frames, fib_anchor, fib["left"], fib["right"])
     grid = build_grid(frames, strategies, exit_cols or [], gstop, ghold,
-                      gtarget, atr_len, swing_look, fib["left"], fib["right"])
+                      gtarget, atr_len, swing_look, fib["left"], fib["right"],
+                      gate_mode=gate_mode)
     return grid, frames
 
 
 GRID_CACHE_DIR = "grid_cache"
 # bump when the set of arrays build_grid stores changes, so old-schema cache
 # files (which would be missing a newly-added array) can't be loaded.
-GRID_SCHEMA_VERSION = 7
+# v8: factor stack changed -- dip_bias renamed range_pos (honest name), rci_trend
+# + rci_heat added as entry factors, htf_rci_trend added to the weekly screen.
+# v9: A["MS"] mainstream-benchmark entry stack added (goal #2's third leg).
+# v10: fib anchor is a DIMENSION (fib_anchor: self/4h/1d/1w) -- P1/P2/P3 can
+#      come from a higher timeframe, so cached grids differ in what the fib
+#      levels MEAN.
+# Cached grids from v7/v8 have a different layout and MUST NOT be reused.
+GRID_SCHEMA_VERSION = 10
 
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                      exit_cols, gstop, ghold, gtarget, atr_len, swing_look,
-                     db_mtime, fib=None, universe="stocks"):
+                     db_mtime, fib=None, universe="stocks", gate_mode="hard",
+                     fib_anchor="1d"):
     """A file path uniquely determined by every input build_grid consumes.
     Same key <-> byte-identical grid, so a cache hit is always trustworthy.
     db_mtime is in the filename (not just the hash) so stale-data grids are
@@ -320,7 +452,8 @@ def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
         "exit_cols": exit_cols or [], "gstop": gstop, "ghold": ghold,
         "gtarget": gtarget, "atr_len": atr_len, "swing_look": swing_look,
         "fib": {**FIB_DEFAULTS, **(fib or {})}, "schema": GRID_SCHEMA_VERSION,
-        "universe": universe,
+        "universe": universe, "gate_mode": gate_mode,
+        "fib_anchor": fib_anchor,
     }, sort_keys=True, default=str)
     h = hashlib.sha1(payload.encode()).hexdigest()[:16]
     return os.path.join(GRID_CACHE_DIR,
@@ -350,7 +483,8 @@ def prepare_grid_cached(strategies, interval="15m",
                         gate_arg="minervini@1d,above_50ma@4h", market="none",
                         months=0, exit_cols=None, gstop=None, ghold=None,
                         gtarget=None, atr_len=14, swing_look=20, fib=None,
-                        universe="stocks"):
+                        universe="stocks", gate_mode="hard",
+                        fib_anchor="1d"):
     """prepare_grid with a disk cache: pay the ~grid-build once per
     (strategies, gate, market, interval, window, params, DB-data) tuple, then
     every later sweep loads the 2D grid in ~a second. Returns
@@ -361,13 +495,13 @@ def prepare_grid_cached(strategies, interval="15m",
     path = _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                             exit_cols, gstop, ghold, gtarget, atr_len,
                             swing_look, int(os.path.getmtime(DB_PATH)), fib,
-                            universe)
+                            universe, gate_mode, fib_anchor)
     if os.path.exists(path):
         return _load_grid(path), True
     grid, _frames = prepare_grid(
         strategies, interval, gate_arg, market, months, exit_cols, gstop,
         ghold, gtarget, atr_len, swing_look, cutoff=cutoff, fib=fib,
-        universe=universe)
+        universe=universe, gate_mode=gate_mode, fib_anchor=fib_anchor)
     _save_grid(path, grid)
     # drop grids built against older DB data for this interval
     mtoken = os.path.basename(path).rsplit("_", 1)[0]  # grid_<int>_<mtime>

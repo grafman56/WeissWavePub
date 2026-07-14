@@ -66,6 +66,19 @@ def listarg(args, name, default, cast):
 RESULTS_DIR = "sweep_results"
 
 
+def grid_sig_of(interval, gate, market, months, universe="stocks",
+                gate_mode="hard", fib_anchor="1d"):
+    """Signature of the DATA + SEMANTICS a score was computed under. Two rows
+    may only be compared (or deduped) when these match.
+
+    universe and gate_mode belong here: a crypto score means nothing for a
+    stocks config, and a score from a hard-gated grid means nothing for a
+    gate-as-factor one. Both were previously missing, which made a silent
+    cross-universe score reuse possible."""
+    return (f"{interval}|{gate}|{gate_mode}|{market}|{months}mo|"
+            f"{universe}|fib@{fib_anchor}")
+
+
 def save_results(df, meta, spec):
     """Append a run's full results to the store: one parquet per run under
     sweep_results/, tagged with a grid signature, scoring mode, spec and
@@ -76,8 +89,11 @@ def save_results(df, meta, spec):
     ts = pd.Timestamp.now()
     out = df.copy()
     out["run_ts"] = ts.isoformat()
-    out["grid_sig"] = (f"{meta['interval']}|{meta['gate']}|{meta['market']}|"
-                       f"{meta['months']}mo")
+    out["grid_sig"] = grid_sig_of(meta["interval"], meta["gate"],
+                                  meta["market"], meta["months"],
+                                  meta.get("universe", "stocks"),
+                                  meta.get("gate_mode", "hard"),
+                                  meta.get("fib_anchor", "self"))
     out["scoring"] = "wf" if meta["wf"] else "oos" if meta["oos"] else "full"
     out["spec"] = json.dumps(spec, default=str)
     fname = os.path.join(RESULTS_DIR,
@@ -289,7 +305,8 @@ def _sweep(args, shard=None):
     if htf_screen:
         drop_cols += ["htf_thr"]
     meta = {"interval": interval, "gate": gate, "market": market,
-            "months": months, "n_syms": len(syms), "n_bars": len(grid),
+            "months": months, "universe": universe,
+            "n_syms": len(syms), "n_bars": len(grid),
             "start": str(pd.Timestamp(grid[0]).date()),
             "end": str(pd.Timestamp(grid[-1]).date()), "cached": cached,
             "build_s": build_s, "sweep_s": sweep_s, "n_combos": len(combos),
