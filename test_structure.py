@@ -12,7 +12,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-from weisswave.structure import confirmed_pivots, structure_levels
+from weisswave.structure import (confirmed_pivots, structure_levels,
+                                 trend_points)
 
 FAILS = []
 
@@ -79,6 +80,41 @@ for t in range(50, 400, 17):
 
 check(f"prefix recompute == full at bar t ({checked} points, no lookahead)",
       mismatch == 0, f"{mismatch} mismatches")
+
+
+# 3. trend_points: three anchors of a fib trend move (leg-low, high, pullback)
+# 5-bar fractal. pivot low 8 @idx2, pivot high 30 @idx8, pivot low 20 @idx14.
+tp_low = pd.Series([12, 11, 8, 11, 13, 16, 19, 22, 25, 24, 23, 22, 21, 20.5,
+                    20, 21, 22, 23, 24], dtype=float)
+tp_high = pd.Series([13, 12, 9, 13, 15, 18, 21, 24, 30, 27, 25, 24, 23, 22,
+                     21, 23, 24, 25, 26], dtype=float)
+P1, P2, P3 = trend_points(tp_high, tp_low, 2, 2)
+
+check("point1 = leg-start swing low (8)", approx(P1.iloc[16], 8.0),
+      f"P1[16]={P1.iloc[16]}")
+check("point2 = swing high (30)", approx(P2.iloc[16], 30.0),
+      f"P2[16]={P2.iloc[16]}")
+check("point3 = pullback low after the high (20)", approx(P3.iloc[16], 20.0),
+      f"P3[16]={P3.iloc[16]}")
+check("point3 is NaN before the pullback low confirms (idx12)",
+      pd.isna(P3.iloc[12]) and approx(P1.iloc[12], 8.0)
+      and approx(P2.iloc[12], 30.0))
+
+# no-lookahead for the 3 anchors: prefix recompute must match
+q1, q2, q3 = trend_points(h, lo, 5, 5)
+mism = 0
+tot = 0
+for t in range(60, 400, 23):
+    a1, a2, a3 = trend_points(h.iloc[:t + 1], lo.iloc[:t + 1], 5, 5)
+    for full, pre in ((q1, a1), (q2, a2), (q3, a3)):
+        tot += 1
+        fv, pv = full.iloc[t], pre.iloc[t]
+        if pd.isna(fv) and pd.isna(pv):
+            continue
+        if pd.isna(fv) or pd.isna(pv) or not approx(fv, pv, 1e-9):
+            mism += 1
+check(f"trend_points prefix recompute == full ({tot} points, no lookahead)",
+      mism == 0, f"{mism} mismatches")
 
 
 if __name__ == "__main__":

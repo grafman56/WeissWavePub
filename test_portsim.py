@@ -120,7 +120,7 @@ ent = [[True], [False], [False], [False]]
 fib_hi = np.full((4, 1), np.nan); fib_hi[0, 0] = 11.0   # H, read at entry
 fib_lo = np.full((4, 1), np.nan); fib_lo[0, 0] = 8.0    # L
 # entry 12; stop = (11 - 0.5*(11-8))*(1-0) = 9.5; bar3 low 9 -> fill 9.5
-r = run(o, h, l, c, ent, stop_mode=FIB, fib_hi=fib_hi, fib_lo=fib_lo,
+r = run(o, h, l, c, ent, stop_mode=FIB, p2=fib_hi, p1=fib_lo,
         fib_stop_ratio=0.5, fib_buf=0.0)
 check("FIB stop = H - ratio*(H-L), fills at 9.5",
       len(r["ret"]) == 1 and abs(r["ret"][0] - (9.5/12 - 1)) < 1e-9
@@ -128,7 +128,7 @@ check("FIB stop = H - ratio*(H-L), fills at 9.5",
 
 # 8. FIB with no confirmed up-leg (H/L NaN) falls back to the pct stop --------
 nan1 = np.full((4, 1), np.nan)
-r = run(o, h, l, c, ent, stop_mode=FIB, fib_hi=nan1, fib_lo=nan1, stop=0.10)
+r = run(o, h, l, c, ent, stop_mode=FIB, p2=nan1, p1=nan1, stop=0.10)
 # fallback = 12*(1-0.10) = 10.8; bar3 low 9 -> fill 10.8
 check("FIB NaN -> pct-stop fallback (10.8)",
       len(r["ret"]) == 1 and abs(r["ret"][0] - (10.8/12 - 1)) < 1e-9
@@ -139,7 +139,7 @@ o, h, l, c = grid([[(10, 10, 10, 10)], [(11, 11, 11, 11)], [(11, 11, 11, 11)],
                    [(11, 13, 11, 11)]])
 ent = [[True], [False], [False], [False]]
 fh = np.full((4, 1), np.nan); fh[0, 0] = 13.0    # H > entry 11
-r = run(o, h, l, c, ent, stop_mode=FIB, fib_hi=fh, fib_lo=nan1,
+r = run(o, h, l, c, ent, stop_mode=FIB, p2=fh, p1=nan1,
         use_fib_target=1)   # fib_lo NaN -> stop falls back (won't trigger)
 check("fib target fills at prior pivot high (13)",
       len(r["ret"]) == 1 and abs(r["ret"][0] - (13/11 - 1)) < 1e-9
@@ -147,22 +147,36 @@ check("fib target fills at prior pivot high (13)",
 
 # 10. fib target H BELOW entry is ignored (no backwards target) --------------
 fh_lo = np.full((4, 1), np.nan); fh_lo[0, 0] = 10.0    # H below entry 11
-r = run(o, h, l, c, ent, stop_mode=FIB, fib_hi=fh_lo, fib_lo=nan1,
+r = run(o, h, l, c, ent, stop_mode=FIB, p2=fh_lo, p1=nan1,
         use_fib_target=1, hold=2)
 check("fib target H <= entry is dropped (exits by time, not target)",
       len(r["ret"]) == 1 and r["reason"][0] == TIME, f"reason={r['reason']}")
 
-# 11. structure trailing ratchets under rising swing lows (fib_lo) -----------
+# 11. structure trailing ratchets under rising swing lows (p3) ---------------
 o, h, l, c = grid([[(10, 10, 10, 10)], [(10, 10, 10, 10)], [(10, 12, 10, 12)],
                    [(12, 12, 11, 11)], [(11, 11, 10.7, 11)]])
 ent = [[True], [False], [False], [False], [False]]
-# fib_lo[t-1] is the swing low the stop trails under at bar t; rises 9 -> 10.8
-flo = np.array([[np.nan], [9.0], [9.0], [10.8], [10.8]])
-r = run(o, h, l, c, ent, stop=0.20, trail_mode=TRAIL_STRUCT, fib_lo=flo,
+# p3[t-1] is the swing low the stop trails under at bar t; rises 9 -> 10.8
+p3s = np.array([[np.nan], [9.0], [9.0], [10.8], [10.8]])
+r = run(o, h, l, c, ent, stop=0.20, trail_mode=TRAIL_STRUCT, p3=p3s,
         swing_buf=0.0)
-# stop ratchets to fib_lo[3]=10.8 by bar4; low 10.7 <= 10.8 -> exit 10.8 (+8%)
+# stop ratchets to p3[3]=10.8 by bar4; low 10.7 <= 10.8 -> exit 10.8 (+8%)
 check("structure trail exits under the swing low, locking a gain",
       len(r["ret"]) == 1 and abs(r["ret"][0] - (10.8/10 - 1)) < 1e-9
+      and r["reason"][0] == TRAIL, f"ret={r['ret']} reason={r['reason']}")
+
+# 11b. fib-ladder trail ratchets under each cleared extension rung ------------
+# P1=10, P2=20, P3=14 (span 10). ext rung 1.0 = 14 + 1.0*10 = 24. Price clears
+# 24 (hwm 25), stop -> 24; then falls to hit it -> TRAIL exit at 24 (+140%).
+o, h, l, c = grid([[(10, 10, 10, 10)], [(10, 10, 10, 10)], [(10, 25, 10, 24)],
+                   [(24, 24, 23, 23.5)], [(23.5, 23.5, 20, 22)]])
+ent = [[True], [False], [False], [False], [False]]
+P1 = np.full((5, 1), 10.0); P2 = np.full((5, 1), 20.0); P3 = np.full((5, 1), 14.0)
+r = run(o, h, l, c, ent, stop=0.50, trail_mode=2, p1=P1, p2=P2, p3=P3,
+        fib_ext=[1.0, 1.618], swing_buf=0.0)
+# entry 10; hwm hits 25 (>24 rung) -> stop 24; bar4 low 20 <= 24 -> exit 24
+check("fib-ladder trail exits under a cleared extension rung (24)",
+      len(r["ret"]) == 1 and abs(r["ret"][0] - (24/10 - 1)) < 1e-9
       and r["reason"][0] == TRAIL, f"ret={r['ret']} reason={r['reason']}")
 
 
@@ -178,7 +192,7 @@ zh = np.full((3, 1), 20.0); zl = np.full((3, 1), 10.0)
 def entered(pxref, mode=FIB_ENTRY_ZONE, hi=zh, lo=zl):
     o, h, l, c = zbars(pxref)
     return len(run(o, h, l, c, zent, hold=1, fib_entry=mode,
-                   fib_hi=hi, fib_lo=lo)["ret"])
+                   p2=hi, p1=lo)["ret"])
 
 
 check("zone entry: in-band pullback (13) enters", entered(13.0) == 1)
@@ -202,7 +216,7 @@ def bounce_entered(confirm, ent=bent, mode=FIB_ENTRY_BOUNCE, **kw):
     o, h, l, c = grid([[(16, 16, 16, 16)], [(15, 15, 13, 13)], confirm,
                        [(14, 14, 14, 14)], [(14, 14, 14, 14)]])
     return len(run(o, h, l, c, ent, hold=1, fib_entry=mode,
-                   fib_hi=bh, fib_lo=bl, **kw)["ret"])
+                   p2=bh, p1=bl, **kw)["ret"])
 
 
 check("bounce entry: tagged band + up-close confirm bar enters",
@@ -213,7 +227,7 @@ check("bounce entry: pullback never reached the band is skipped",
       len(run(*grid([[(16, 16, 16, 16)], [(16, 16, 15.6, 16)],
                      [(16, 17, 15.6, 16.5)], [(16, 16, 16, 16)],
                      [(16, 16, 16, 16)]]), bent, hold=1,
-              fib_entry=FIB_ENTRY_BOUNCE, fib_hi=bh, fib_lo=bl)["ret"]) == 0)
+              fib_entry=FIB_ENTRY_BOUNCE, p2=bh, p1=bl)["ret"]) == 0)
 
 # 14. BOUNCE_TREND: the bounce is the entry, gated by the TREND not the signal
 ones = np.ones((5, 1))

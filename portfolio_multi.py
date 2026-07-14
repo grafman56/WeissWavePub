@@ -28,11 +28,12 @@ from weisswave import portsim
 from weisswave.db import DB_PATH
 from weisswave.optimize import benchmark_index
 from weisswave.signals import combine_signals, recent
-from weisswave.structure import confirmed_pivots
+from weisswave.structure import trend_points
 
 STOP_MODES = {"pct": portsim.PCT, "atr": portsim.ATR, "swing": portsim.SWING,
               "fib": portsim.FIB}
-TRAIL_MODES = {"pct": portsim.TRAIL_PCT, "structure": portsim.TRAIL_STRUCT}
+TRAIL_MODES = {"pct": portsim.TRAIL_PCT, "structure": portsim.TRAIL_STRUCT,
+               "fib": portsim.TRAIL_FIB}
 FIB_ENTRY_MODES = {"off": portsim.FIB_ENTRY_OFF, "zone": portsim.FIB_ENTRY_ZONE,
                    "bounce": portsim.FIB_ENTRY_BOUNCE,
                    "bounce-trend": portsim.FIB_ENTRY_BOUNCE_TREND}
@@ -47,9 +48,10 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
                atr_len, swing_look, fib_left=10, fib_right=10):
     """Align all symbols onto a common time grid -> 2D (T x S) arrays for the
     numba engine, plus per-bar best-strategy entry/score/index and stop refs.
-    ATR/SW are per-bar stop references; FIB_HI/FIB_LO are the last confirmed
-    swing high / low ladders (the engine forms the fib stop/target/trail from
-    them at sim time). All lookahead-free — computed from bars <= t.
+    ATR/SW are per-bar stop references; P1/P2/P3 are the three fib-trend
+    anchors (leg-start low, swing high, pullback low) the engine forms the fib
+    stop/zone/target/extension-trail from at sim time. All lookahead-free —
+    computed from bars <= t.
     Returns (arrays dict, symbols, grid, strat_stop/hold/target)."""
     syms = list(frames.keys())
     S = len(syms)
@@ -58,7 +60,7 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
     T = len(grid)
     gpos = {ts: i for i, ts in enumerate(grid)}
     A = {k: np.zeros((T, S)) for k in ("O", "H", "L", "C", "SCORE", "ATR",
-                                       "SW", "FIB_HI", "FIB_LO", "GATE")}
+                                       "SW", "P1", "P2", "P3", "GATE")}
     V = np.zeros((T, S), bool)
     ENT = np.zeros((T, S), bool)
     SIDX = np.zeros((T, S), np.int64)
@@ -86,9 +88,10 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         tr = np.maximum(hi - lo, np.maximum(np.abs(hi - pc), np.abs(lo - pc)))
         A["ATR"][pos, j] = pd.Series(tr).rolling(atr_len, min_periods=1).mean()
         A["SW"][pos, j] = pd.Series(lo).rolling(swing_look, min_periods=1).min()
-        ph, pl = confirmed_pivots(sig["High"], sig["Low"], fib_left, fib_right)
-        A["FIB_HI"][pos, j] = ph.to_numpy()      # last confirmed swing high H
-        A["FIB_LO"][pos, j] = pl.to_numpy()      # last confirmed swing low L
+        p1, p2, p3 = trend_points(sig["High"], sig["Low"], fib_left, fib_right)
+        A["P1"][pos, j] = p1.to_numpy()          # leg-start swing low
+        A["P2"][pos, j] = p2.to_numpy()          # swing high
+        A["P3"][pos, j] = p3.to_numpy()          # pullback low (NaN until conf.)
 
         best_score = np.full(len(sig), -1.0)
         best_idx = np.zeros(len(sig), np.int64)
@@ -164,7 +167,7 @@ def prepare_grid(strategies, interval="15m",
 GRID_CACHE_DIR = "grid_cache"
 # bump when the set of arrays build_grid stores changes, so old-schema cache
 # files (which would be missing a newly-added array) can't be loaded.
-GRID_SCHEMA_VERSION = 2
+GRID_SCHEMA_VERSION = 3
 
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
@@ -282,8 +285,11 @@ def main():
     fib_bounce_look = int(arg(args, "fib-bounce-look", "3"))
     # trailing stop: once a trade is up +trail_act, ratchet the stop up. Mode
     # pct = trail_dist below the high-water mark; structure = under the last
-    # confirmed swing low (fixes winners shaken out by a fixed %). None = off.
+    # confirmed swing low; fib = under each cleared fib/extension rung (protect
+    # the level, let the winner run). None = off.
     trail_mode = arg(args, "trail-mode", "pct")
+    fib_ext = [float(x) for x in arg(args, "fib-ext", "1.0,1.272,1.618,2.0")
+               .split(",")]
     trail_act = arg(args, "trail-activate", None)
     trail_act = float(trail_act) if trail_act not in (None, "none", "") else None
     trail_dist = float(arg(args, "trail-dist", "0.03"))
@@ -347,9 +353,9 @@ def main():
             stop_mode=STOP_MODES.get(stop_mode, 0), atr_mult=atr_mult,
             swing_buf=swing_buf, trail_act=trail_act or 0.0,
             trail_dist=trail_dist, cost_side=cost_side, max_pos=max_pos,
-            init_cash=capital, fib_hi=A["FIB_HI"], fib_lo=A["FIB_LO"],
+            init_cash=capital, p1=A["P1"], p2=A["P2"], p3=A["P3"],
             fib_stop_ratio=fib_stop_ratio, fib_buf=fib_buf,
-            trail_mode=TRAIL_MODES.get(trail_mode, 0),
+            trail_mode=TRAIL_MODES.get(trail_mode, 0), fib_ext=fib_ext,
             use_fib_target=use_fib_target, gate=A["GATE"],
             fib_entry=FIB_ENTRY_MODES.get(fib_entry, 0), fib_zone_lo=fib_zone_lo,
             fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look)
@@ -380,7 +386,7 @@ def main():
             + (" tp=fib" if use_fib_target and stop_mode == "fib" else "")
             + (f" entry={fib_entry}[{fib_zone_lo:.3f}-{fib_zone_hi:.3f}]"
                if fib_entry != "off" else "")
-            + (f" trail={trail_mode}" if trail_mode == "structure"
+            + (f" trail={trail_mode}" if trail_mode in ("structure", "fib")
                else f" trail={trail_act:.0%}@{trail_dist:.0%}" if trail_act
                else "")
             + (f" window=last {months}mo" if months else "") + f"  ({secs:.1f}s)",

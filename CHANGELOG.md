@@ -5,6 +5,17 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Three-point fib + fib-ladder trailing**: the fib is now a proper
+  three-point construct — point1 (leg-start low), point2 (swing high), point3
+  (pullback low), via `structure.trend_points` — so retracement/zone/stop
+  anchor the true up-leg point1->point2 (previously the "last pivot low" could
+  grab the pullback low and mis-anchor). `--trail-mode=fib` trails the stop
+  under each fib level once price clears it (the prior high, then `--fib-ext`
+  extension rungs 1.0/1.272/1.618/2.0), snapshotting the fib at entry — so a
+  winner is protected at each level but never taken off just for tagging one.
+  The extension math is verified to the dollar against charted examples.
+  Trust: `trend_points` known-anchors + no-lookahead prefix test; fib-ladder
+  trail scenario in `test_portsim.py`; grid schema bumped to v3.
 - **Fib entry modes + deeper pivots**: `--fib-entry=off|zone|bounce|
   bounce-trend` filters or triggers entries off the pullback into the
   `--fib-zone-lo`..`--fib-zone-hi` band (default 0.5-0.786) of the current

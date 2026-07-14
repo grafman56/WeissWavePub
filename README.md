@@ -163,11 +163,17 @@ python sweep.py --months=12 --stop-mode=swing,atr \
 - Exits: fixed-% / ATR / swing-low / **fib** stops, a profit target, trailing
   and ratchet ("lock a gain once up X%") stops, a reversal exit signal, or a
   max-hold — whichever triggers first.
-- `--stop-mode=fib` auto-fibs the last confirmed up-leg (swing low -> swing
-  high) and stops just below the `--fib-stop` retracement (e.g. 0.786 = under
-  the 78.6% level); `--fib-target` takes profit at the prior swing high, and
-  `--trail-mode=structure` trails the stop under each new higher swing low
-  instead of a fixed % — the fix for winners getting shaken out early.
+- `--stop-mode=fib` auto-fibs the up-leg (leg-start swing low -> swing high)
+  and stops just below the `--fib-stop` retracement (e.g. 0.786 = under the
+  78.6% level). The fib is a three-point construct (point1 leg-start low,
+  point2 high, point3 pullback low) — the same anchors a charting tool uses.
+- `--trail-mode=fib` trails the stop under each fib level once price clears
+  it (the prior high, then the `--fib-ext` extension rungs 1.0/1.272/1.618…),
+  so a winner is protected at each level but never taken off "just because" it
+  reached one. `--trail-mode=structure` trails under each new higher swing
+  low. Both fix winners getting shaken out early. (`--fib-target` — a hard
+  take-profit at the prior high — exists but usually caps winners; prefer a
+  trail.)
 - `--fib-entry` filters or triggers entries off the pullback into the
   `--fib-zone-lo`..`--fib-zone-hi` band (default 0.5-0.786) of the current
   up-leg: `off` (signals only), `zone` (signal + price in the band),

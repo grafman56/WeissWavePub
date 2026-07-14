@@ -9,7 +9,8 @@ Sweep axes accept comma lists; the cartesian product is run:
     --fib-stop=0.618,0.786   --fib-buf=0.005   --fib-target=0,1
     --fib-entry=off,zone,bounce,bounce-trend  (pullback-into-zone entry;
         bounce needs an up-close off the band, bounce-trend needs only trend)
-    --trail-mode=pct,structure   --trail-activate=0,0.04,0.06
+    --trail-mode=pct,structure,fib   --fib-ext=1.0,1.618  (fib-ladder trail)
+    --trail-activate=0,0.04,0.06
     --trail-dist=0.03,0.06,0.10   --target=0,0.06   --max-positions=3,5
 
 Fixed (rebuild the grid to change): strategies, --gate, --market, --interval,
@@ -58,6 +59,8 @@ def main():
     fib_zone_lo = float(arg(args, "fib-zone-lo", "0.5"))
     fib_zone_hi = float(arg(args, "fib-zone-hi", "0.786"))
     fib_bounce_look = int(arg(args, "fib-bounce-look", "3"))
+    fib_ext = [float(x) for x in arg(args, "fib-ext", "1.0,1.272,1.618,2.0")
+               .split(",")]
 
     with open(arg(args, "file", BOT_FILE), encoding="utf-8") as f:
         strategies = json.load(f)
@@ -103,9 +106,9 @@ def main():
             A["ATR"], A["SW"], st_stop, st_hold, tgt_arr,
             stop_mode=STOP_MODES.get(sm, 0), atr_mult=am, swing_buf=sb,
             trail_act=ta, trail_dist=td, cost_side=cost_side, max_pos=mp,
-            init_cash=capital, fib_hi=A["FIB_HI"], fib_lo=A["FIB_LO"],
+            init_cash=capital, p1=A["P1"], p2=A["P2"], p3=A["P3"],
             fib_stop_ratio=fr, fib_buf=fb, trail_mode=TRAIL_MODES.get(tm, 0),
-            use_fib_target=ftg, gate=A["GATE"],
+            fib_ext=fib_ext, use_fib_target=ftg, gate=A["GATE"],
             fib_entry=FIB_ENTRY_MODES.get(fe, 0), fib_zone_lo=fib_zone_lo,
             fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look)
         eq = pd.Series(res["equity"])

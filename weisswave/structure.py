@@ -9,9 +9,36 @@ t depends only on bars <= t. test_structure.py proves this by recomputing on
 truncated prefixes.
 """
 
+import numpy as np
 import pandas as pd
 
 from .divergence import pine_pivot_high, pine_pivot_low
+
+
+def trend_points(high: pd.Series, low: pd.Series, lbL: int = 10,
+                 lbR: int = 10):
+    """The three anchors of a Fibonacci trend move, lookahead-free:
+
+      point1 = the swing low that STARTED the last up-leg (leg-start low)
+      point2 = the last confirmed swing HIGH (leg top)
+      point3 = the swing low AFTER that high (the pullback low), or NaN until
+               a pullback low has confirmed.
+
+    Retracements/zone/stop anchor point1 -> point2 (the up-leg being retraced).
+    Extensions project (point2 - point1) from point3. Each series is NaN until
+    the relevant pivots have confirmed, so a bar t depends only on bars <= t
+    (test_structure.py proves it via prefix recompute)."""
+    ph = pine_pivot_high(high, lbL, lbR)
+    pl = pine_pivot_low(low, lbL, lbR)
+    ph_price = high.shift(lbR).where(ph).ffill()
+    pl_price = low.shift(lbR).where(pl).ffill()
+    ipos = pd.Series(np.arange(len(high), dtype=float), index=high.index)
+    last_ph_i = ipos.where(ph).ffill()
+    last_pl_i = ipos.where(pl).ffill()
+    point2 = ph_price                              # last confirmed swing high
+    point1 = pl_price.where(ph).ffill()            # the pivot low as of that high
+    point3 = pl_price.where(last_pl_i > last_ph_i)  # pullback low after the high
+    return point1, point2, point3
 
 
 def confirmed_pivots(high: pd.Series, low: pd.Series, lbL: int, lbR: int):
