@@ -13,7 +13,12 @@ All notable changes to WeissWave. Each release maps to git commits on
   them so an agent can query "what's been tested, what won" instead of
   re-running. The CLI gains `--save-results`. Fitness is already walk-forward
   robust (`--wf-folds`), so a search optimizes robustness, not one lucky
-  window. (Parallel execution is the next piece.)
+  window.
+- **Parallel sweep** (`--jobs=N` / `run_sweep(..., jobs=N)`): fans the configs
+  across N processes. The parent builds/caches the grid once, then each worker
+  loads it from the disk cache in ~0.3s and sims its stride — so parallelism
+  costs one grid build, not N. Results verified byte-identical to serial. This
+  is what makes an agent-scale weight-space search tractable.
 - **Higher-TF setup screen — the cascade** (`--htf-screen --htf-threshold`):
   weekly setup factors (`htf_trend` = EMA-stack alignment across 20/50/100/200,
   `htf_ema_dist` = distance from the weekly EMA, `htf_fib_prox` = nearest weekly

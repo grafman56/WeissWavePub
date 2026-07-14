@@ -89,10 +89,12 @@ def load_results():
             if files else pd.DataFrame())
 
 
-def _sweep(args):
+def _sweep(args, shard=None):
     """Run the sweep described by CLI-style `args`; return (full results
     DataFrame sorted by the ranking column, meta dict). No printing -- the
-    callable core shared by the CLI and run_sweep()."""
+    callable core shared by the CLI and run_sweep(). `shard=(i, n)` runs only
+    configs i::n (for parallel workers); the grid is loaded from cache so every
+    shard shares it cheaply."""
     interval = arg(args, "interval", "15m")
     gate = arg(args, "gate", "minervini@1d,above_50ma@4h")
     market = arg(args, "market", "none")
@@ -209,6 +211,9 @@ def _sweep(args):
         ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
         ax["ftg"], ax["fe"], ax["ta"], ax["td"], ax["tgt"], ax["mp"],
         thr_list, htf_thr_list, *w_lists))
+    n_all = len(combos)
+    if shard is not None:
+        combos = combos[shard[0]::shard[1]]     # this worker's stride
     rows = []
     t1 = time.time()
     for combo in combos:
@@ -312,21 +317,50 @@ def _spec_to_args(spec):
     return out
 
 
-def run_sweep(spec, save=True):
+def _sweep_shard(args, i, n):
+    """Module-level worker: run configs i::n. Loads the grid from cache."""
+    return _sweep(args, shard=(i, n))
+
+
+def _run(args, jobs):
+    """Run a sweep serially (jobs<=1) or across `jobs` processes. The parent
+    runs shard 0 first (building/caching the grid), then workers hit the cache
+    -- so parallelism costs one grid build, not N."""
+    if jobs <= 1:
+        return _sweep(args)
+    import multiprocessing as mp
+    df0, meta = _sweep(args, shard=(0, jobs))      # builds + caches the grid
+    with mp.Pool(jobs - 1) as pool:
+        rest = pool.starmap(_sweep_shard, [(args, i, jobs)
+                                           for i in range(1, jobs)])
+    dfs = [df0] + [d for d, _ in rest]
+    metas = [meta] + [m for _, m in rest]
+    df = pd.concat(dfs, ignore_index=True) \
+        .sort_values(meta["sort_col"], ascending=False).reset_index(drop=True)
+    meta = {**meta, "n_combos": sum(m["n_combos"] for m in metas),
+            "n_sims": sum(m["n_sims"] for m in metas),
+            "sweep_s": max(m["sweep_s"] for m in metas),
+            "build_s": max(m["build_s"] for m in metas)}
+    return df, meta
+
+
+def run_sweep(spec, save=True, jobs=1):
     """Programmatic entry point (the agent API): run a sweep from a spec dict,
     persist the full results to the store, and return the results DataFrame.
     `spec` keys are the CLI flag names, e.g. {"months": 12, "stop-mode": "fib",
-    "conf-entry": True, "w-signal": [0, 1, 2], "wf-folds": 6}."""
-    df, meta = _sweep(_spec_to_args(spec))
+    "conf-entry": True, "w-signal": [0, 1, 2], "wf-folds": 6}. `jobs` fans the
+    configs across processes (the cached grid is shared, cheaply)."""
+    df, meta = _run(_spec_to_args(spec), jobs)
     if save:
         save_results(df, meta, spec)
     return df
 
 
 def main():
-    df, meta = _sweep(sys.argv[1:])
-    if "--save-results" in sys.argv:
-        save_results(df, meta, {"argv": " ".join(sys.argv[1:])})
+    args = sys.argv[1:]
+    df, meta = _run(args, int(arg(args, "jobs", "1")))
+    if "--save-results" in args:
+        save_results(df, meta, {"argv": " ".join(args)})
     _display(df, meta)
 
 
