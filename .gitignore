@@ -6,6 +6,7 @@ market.duckdb
 market.duckdb.wal
 finder_results.pkl
 strategies.json
+bot_strategies.json
 scans/
 agent-tasks/
 signals_cache/
