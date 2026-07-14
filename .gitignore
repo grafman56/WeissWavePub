@@ -23,3 +23,7 @@ venv/
 
 # ── Local tooling ─────────────────────────────────────────────────────────
 .claude/
+
+# opencode: project-local agents are versioned; runtime scratch is not
+.opencode/_prompt.txt
+agent-tasks/

@@ -44,8 +44,11 @@ import time
 import numpy as np
 import pandas as pd
 
-from agent_search import (Engine, _worker_init, _worker_score, evolve,
-                          parse_job)
+from search_space import bootstrap_space      # must precede the imports below
+bootstrap_space(sys.argv[1:])
+
+from agent_search import (Engine, _worker_init,             # noqa: E402
+                          _worker_score, evolve, parse_job)
 from portfolio_multi import FACTOR_NAMES
 from sweep import RESULTS_DIR, save_results
 from search_space import space_sig

@@ -28,13 +28,38 @@ import os
 
 import numpy as np
 
-DEFAULT_SPACE = "search_space.json"
+# The active space file. WEISSWAVE_SPACE lets it be chosen BEFORE import, which
+# matters because portfolio_multi builds FACTOR_NAMES from the factor block at
+# import time -- a --space= parsed later in main() would arrive too late to
+# change the factor stack. bootstrap_space() (below) sets it from argv early;
+# child processes inherit it through the environment, so pool workers agree.
+DEFAULT_SPACE = os.environ.get("WEISSWAVE_SPACE", "search_space.json")
 
 
-def load_space(path=DEFAULT_SPACE, overrides=None):
+def bootstrap_space(argv):
+    """Call BEFORE importing anything that reads the factor spec (i.e. before
+    `from portfolio_multi import ...`). Promotes --space=FILE into the
+    environment so the factor stack is built from the right file, in this
+    process and in every worker it spawns."""
+    global DEFAULT_SPACE
+    for a in argv:
+        if a.startswith("--space="):
+            path = a.split("=", 1)[1]
+            os.environ["WEISSWAVE_SPACE"] = path
+            DEFAULT_SPACE = path
+            return path
+    return DEFAULT_SPACE
+
+
+def load_space(path=None, overrides=None):
     """Load the spec; `overrides` is a dotted-key dict e.g.
     {"grid.interval": "5m", "space.weights.hi": 6.0} so a CLI flag or an agent
-    can bend one knob without editing the file."""
+    can bend one knob without editing the file.
+
+    `path=None` resolves DEFAULT_SPACE at CALL time, not at def time -- a
+    default argument would bind the value when this function was defined, i.e.
+    before bootstrap_space() could change it."""
+    path = path or DEFAULT_SPACE
     with open(path, encoding="utf-8") as f:
         sp = json.load(f)
     for k, v in (overrides or {}).items():

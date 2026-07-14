@@ -42,10 +42,17 @@ import time
 import numpy as np
 import pandas as pd
 
-from portfolio_multi import (FACTOR_NAMES, HTF_START, MAINSTREAM_COLUMNS,
-                             STOP_MODES, TRAIL_MODES, prepare_grid_cached)
-from search_space import (DEFAULT_SPACE, load_space, mutate_cfg, parse_set_args,
-                          sample_cfg, space_sig)
+# --space= must reach the environment BEFORE portfolio_multi is imported:
+# FACTOR_NAMES is built from the spec's factor block at import time, so a flag
+# parsed later in main() would arrive too late to change the factor stack.
+from search_space import bootstrap_space
+bootstrap_space(sys.argv[1:])
+
+from portfolio_multi import (FACTOR_NAMES, HTF_START,      # noqa: E402
+                             MAINSTREAM_COLUMNS, STOP_MODES, TRAIL_MODES,
+                             prepare_grid_cached)
+from search_space import (DEFAULT_SPACE, load_space,       # noqa: E402
+                          mutate_cfg, parse_set_args, sample_cfg, space_sig)
 from sweep import RESULTS_DIR, grid_sig_of, load_results, save_results
 from test_strategy import arg
 from weisswave import portsim
@@ -335,8 +342,19 @@ def main():
     prior = load_results()
     seen = {}
     if len(prior) and {"cfg_sig", "grid_sig", "wf_fit"} <= set(prior.columns):
-        for _, row in prior[prior["grid_sig"] == gsig].iterrows():
-            pos = int(str(row.get("wf_pos", "0/0")).split("/")[0])
+        # The store is SCHEMA-UNIONED across every tool that writes to it, so a
+        # matching grid_sig does NOT mean a matching row shape: validate.py
+        # writes per-FOLD rows (no cfg_sig, no wf_pos) that land right next to
+        # agent_search's per-CONFIG rows. Take only rows that are actually a
+        # scored config, and never assume a field parses.
+        sub = prior[prior["grid_sig"] == gsig]
+        sub = sub.dropna(subset=[c for c in ("cfg_sig", "wf_exc", "wf_pos")
+                                 if c in sub.columns])
+        for _, row in sub.iterrows():
+            try:
+                pos = int(str(row["wf_pos"]).split("/")[0])
+            except (ValueError, TypeError, KeyError):
+                continue                     # not a per-config row; skip it
             # wf_trades is absent on rows written before it existed; -1 means
             # "unknown", which must not be mistaken for "never traded".
             ntr = row.get("wf_trades", -1)
