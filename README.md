@@ -167,8 +167,14 @@ python sweep.py --months=12 --stop-mode=swing,atr \
   high) and stops just below the `--fib-stop` retracement (e.g. 0.786 = under
   the 78.6% level); `--fib-target` takes profit at the prior swing high, and
   `--trail-mode=structure` trails the stop under each new higher swing low
-  instead of a fixed % — the fix for winners getting shaken out early. The
-  pivots are confirmation-lagged, so the levels use no future bars.
+  instead of a fixed % — the fix for winners getting shaken out early.
+- `--fib-zone-gate` only enters when price has pulled back into the
+  `--fib-zone-lo`..`--fib-zone-hi` retracement band (default 0.5-0.786) of the
+  current up-leg — "buy the pullback into the zone", like the charts.
+- Pivots come from a confirmation-lagged fractal (`--fib-left/--fib-right`,
+  default 10 = only significant swings), so every fib level uses no future
+  bars. Only the pivot window rebuilds the grid; the ratio/buffer/target/
+  zone/trail-mode are applied at sim time and sweep cheaply.
 - Everything is benchmarked against simply *holding the traded names* over
   the same window, so "active trading beat buy-and-hold" is an honest test.
 

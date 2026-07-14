@@ -33,13 +33,15 @@ from weisswave.structure import confirmed_pivots
 STOP_MODES = {"pct": portsim.PCT, "atr": portsim.ATR, "swing": portsim.SWING,
               "fib": portsim.FIB}
 TRAIL_MODES = {"pct": portsim.TRAIL_PCT, "structure": portsim.TRAIL_STRUCT}
-# only the pivot window is baked into the grid; the fib ratio/buffer are
-# applied at sim time so they stay cheaply sweepable.
-FIB_DEFAULTS = {"left": 5, "right": 5}
+# only the pivot window is baked into the grid; the fib ratio/buffer/zone are
+# applied at sim time so they stay cheaply sweepable. Default 10 = only
+# "significant" swings become pivots (matches TradingView Auto Fib depth);
+# a bigger right window means more confirmation lag before the anchor updates.
+FIB_DEFAULTS = {"left": 10, "right": 10}
 
 
 def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
-               atr_len, swing_look, fib_left=5, fib_right=5):
+               atr_len, swing_look, fib_left=10, fib_right=10):
     """Align all symbols onto a common time grid -> 2D (T x S) arrays for the
     numba engine, plus per-bar best-strategy entry/score/index and stop refs.
     ATR/SW are per-bar stop references; FIB_HI/FIB_LO are the last confirmed
@@ -257,12 +259,19 @@ def main():
     # 78.6% level). --fib-target uses the prior pivot high as the take-profit.
     # left/right (pivot window) are baked into the grid; stop-ratio/buf are
     # applied at sim time (cheaply sweepable).
-    fib = {"left": int(arg(args, "fib-left", "5")),
-           "right": int(arg(args, "fib-right", "5"))}
+    fib = {"left": int(arg(args, "fib-left", "10")),
+           "right": int(arg(args, "fib-right", "10"))}
     fib_stop_ratio = float(arg(args, "fib-stop", "0.786"))
     fib_buf = float(arg(args, "fib-buf", "0.005"))
     use_fib_target = 1 if arg(args, "fib-target", "0") not in \
         ("0", "no", "false", "none", "") else 0
+    # entry gate: only take entries whose price has pulled back INTO the fib
+    # retracement zone [lo, hi] of the current up-leg (like buying the 0.5-
+    # 0.786 zone on the charts). off by default; needs a valid up-leg.
+    fib_zone_gate = 1 if arg(args, "fib-zone-gate", "0") not in \
+        ("0", "no", "false", "none", "") else 0
+    fib_zone_lo = float(arg(args, "fib-zone-lo", "0.5"))
+    fib_zone_hi = float(arg(args, "fib-zone-hi", "0.786"))
     # trailing stop: once a trade is up +trail_act, ratchet the stop up. Mode
     # pct = trail_dist below the high-water mark; structure = under the last
     # confirmed swing low (fixes winners shaken out by a fixed %). None = off.
@@ -333,7 +342,8 @@ def main():
             init_cash=capital, fib_hi=A["FIB_HI"], fib_lo=A["FIB_LO"],
             fib_stop_ratio=fib_stop_ratio, fib_buf=fib_buf,
             trail_mode=TRAIL_MODES.get(trail_mode, 0),
-            use_fib_target=use_fib_target)
+            use_fib_target=use_fib_target, fib_zone_gate=fib_zone_gate,
+            fib_zone_lo=fib_zone_lo, fib_zone_hi=fib_zone_hi)
         why = {1: "stop", 2: "trail", 3: "target", 4: "signal", 5: "time",
                6: "eod"}
         trades = [{"symbol": syms[res["sym"][i]],
@@ -359,6 +369,8 @@ def main():
             f"cost={cost_side * 2 * 10000:.0f}bps stop={stop_mode}"
             + (f"({fib_stop_ratio:.3f})" if stop_mode == "fib" else "")
             + (" tp=fib" if use_fib_target and stop_mode == "fib" else "")
+            + (f" zone={fib_zone_lo:.3f}-{fib_zone_hi:.3f}"
+               if fib_zone_gate else "")
             + (f" trail={trail_mode}" if trail_mode == "structure"
                else f" trail={trail_act:.0%}@{trail_dist:.0%}" if trail_act
                else "")

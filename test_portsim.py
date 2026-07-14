@@ -165,6 +165,31 @@ check("structure trail exits under the swing low, locking a gain",
       and r["reason"][0] == TRAIL, f"ret={r['ret']} reason={r['reason']}")
 
 
+# 12. fib zone gate: enter only when prior close is in the retracement band --
+# H=20, L=10; zone 0.5-0.786 -> price band [20-0.786*10, 20-0.5*10] = [12.14, 15]
+def zbars(pxref):
+    return grid([[(pxref, pxref, pxref, pxref)], [(13, 13, 13, 13)],
+                 [(13, 13, 13, 13)]])
+zent = [[True], [False], [False]]
+zh = np.full((3, 1), 20.0); zl = np.full((3, 1), 10.0)
+
+
+def entered(pxref, gate=1, hi=zh, lo=zl):
+    o, h, l, c = zbars(pxref)
+    return len(run(o, h, l, c, zent, hold=1, fib_zone_gate=gate,
+                   fib_hi=hi, fib_lo=lo)["ret"])
+
+
+check("zone gate: in-band pullback (13) enters", entered(13.0) == 1)
+check("zone gate: too-shallow pullback (16) is skipped", entered(16.0) == 0)
+check("zone gate: too-deep pullback (11) is skipped", entered(11.0) == 0)
+check("zone gate: no valid up-leg (NaN H/L) is skipped",
+      entered(13.0, hi=np.full((3, 1), np.nan),
+              lo=np.full((3, 1), np.nan)) == 0)
+check("zone gate OFF: shallow pullback (16) still enters (gate is the cause)",
+      entered(16.0, gate=0) == 1)
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL PORTSIM TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))

@@ -5,6 +5,14 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Fib zone-gated entries + deeper pivots**: `--fib-zone-gate` restricts
+  entries to price pulled back into the `--fib-zone-lo`..`--fib-zone-hi`
+  retracement band (default 0.5-0.786) of the current up-leg — "buy the
+  pullback into the zone", matching the charting playbook. The pivot-window
+  default rose 5 -> 10 so only significant swings anchor the fib (matches the
+  TradingView Auto Fib depth). Zone bounds/gate are sim-time params (cheap to
+  sweep); only the pivot window rebuilds the grid. Trust: zone-gate scenarios
+  in `test_portsim.py` (in-band enters, too-shallow/deep/no-leg skipped).
 - **Fib / structure stops** (`--stop-mode=fib`, `weisswave/structure.py`):
   auto-fib the last confirmed up-leg (swing low -> swing high) and stop below
   the `--fib-stop` retracement (0.786 / 0.618); `--fib-target` takes profit at

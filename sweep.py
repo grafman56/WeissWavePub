@@ -7,6 +7,7 @@ one grid-build plus near-instant configs.
 Sweep axes accept comma lists; the cartesian product is run:
     --stop-mode=swing,atr,fib   --atr-mult=2,3   --swing-buf=0.005,0.01
     --fib-stop=0.618,0.786   --fib-buf=0.005   --fib-target=0,1
+    --fib-zone-gate=0,1  (enter only in the fib-zone-lo..hi pullback band)
     --trail-mode=pct,structure   --trail-activate=0,0.04,0.06
     --trail-dist=0.03,0.06,0.10   --target=0,0.06   --max-positions=3,5
 
@@ -50,9 +51,11 @@ def main():
     atr_len = int(arg(args, "atr-len", "14"))
     top = int(arg(args, "top", "25"))
     # fib pivot window is a BUILD param (baked into the grid); the ratio/buf/
-    # target/trail-mode are swept at sim time below.
-    fib = {"left": int(arg(args, "fib-left", "5")),
-           "right": int(arg(args, "fib-right", "5"))}
+    # target/trail-mode/zone are swept at sim time below.
+    fib = {"left": int(arg(args, "fib-left", "10")),
+           "right": int(arg(args, "fib-right", "10"))}
+    fib_zone_lo = float(arg(args, "fib-zone-lo", "0.5"))
+    fib_zone_hi = float(arg(args, "fib-zone-hi", "0.786"))
 
     with open(arg(args, "file", BOT_FILE), encoding="utf-8") as f:
         strategies = json.load(f)
@@ -71,6 +74,7 @@ def main():
         "fb": listarg(args, "fib-buf", [0.005], float),
         "tm": listarg(args, "trail-mode", ["pct"], str),
         "ftg": listarg(args, "fib-target", [0], int),      # 0/1 use fib tp
+        "fzg": listarg(args, "fib-zone-gate", [0], int),   # 0/1 zone entry
         "ta": listarg(args, "trail-activate", [0.0], float),
         "td": listarg(args, "trail-dist", [0.03], float),
         "tgt": listarg(args, "target", [0.0], float),
@@ -87,10 +91,10 @@ def main():
 
     combos = list(itertools.product(
         ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
-        ax["ftg"], ax["ta"], ax["td"], ax["tgt"], ax["mp"]))
+        ax["ftg"], ax["fzg"], ax["ta"], ax["td"], ax["tgt"], ax["mp"]))
     rows = []
     t1 = time.time()
-    for sm, am, sb, fr, fb, tm, ftg, ta, td, tg, mp in combos:
+    for sm, am, sb, fr, fb, tm, ftg, fzg, ta, td, tg, mp in combos:
         tgt_arr = np.full_like(st_tgt, tg) if tg > 0 else st_tgt
         res = portsim.simulate(
             A["O"], A["H"], A["L"], A["C"], V, ENT, A["SCORE"], SIDX, EXT,
@@ -99,13 +103,14 @@ def main():
             trail_act=ta, trail_dist=td, cost_side=cost_side, max_pos=mp,
             init_cash=capital, fib_hi=A["FIB_HI"], fib_lo=A["FIB_LO"],
             fib_stop_ratio=fr, fib_buf=fb, trail_mode=TRAIL_MODES.get(tm, 0),
-            use_fib_target=ftg)
+            use_fib_target=ftg, fib_zone_gate=fzg, fib_zone_lo=fib_zone_lo,
+            fib_zone_hi=fib_zone_hi)
         eq = pd.Series(res["equity"])
         r = res["ret"]
         n = len(r)
         rows.append({
             "stop": sm, "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
-            "tmode": tm, "ftgt": ftg, "trail": f"{ta:.0%}/{td:.0%}"
+            "tmode": tm, "ftgt": ftg, "zone": fzg, "trail": f"{ta:.0%}/{td:.0%}"
             if ta > 0 else "-", "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp,
             "CAGR%": round(((eq.iloc[-1] / capital) ** (1 / years) - 1) * 100, 1),
             "maxDD%": round((eq / eq.cummax() - 1).min() * 100, 1),
@@ -118,7 +123,7 @@ def main():
     df = pd.DataFrame(rows).sort_values("CAGR%", ascending=False)
     # drop constant columns for readability
     for c in ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
-              "trail", "tgt", "mp"]:
+              "zone", "trail", "tgt", "mp"]:
         if df[c].nunique() == 1:
             df = df.drop(columns=c)
     pd.set_option("display.width", 200)

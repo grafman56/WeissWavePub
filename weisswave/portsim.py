@@ -36,6 +36,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
               stop_mode, atr_mult, swing_buf,
               fib_stop_ratio, fib_buf,
               trail_act, trail_dist, trail_mode, use_fib_target,
+              fib_zone_gate, fib_zone_lo, fib_zone_hi,
               cost_side, max_pos, init_cash):
     T, S = open2d.shape
     cash = init_cash
@@ -140,6 +141,21 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                     if n_open >= max_pos:
                         break
                     s = cs[order[oi]]
+                    # fib zone gate: only enter if price has pulled back into
+                    # the [lo, hi] retracement band of the current up-leg L->H
+                    # (buying the 0.5-0.786 zone, like the charts). Uses the
+                    # confirmed prior close, so no lookahead.
+                    if fib_zone_gate:
+                        H = fib_hi[t - 1, s]
+                        L = fib_lo[t - 1, s]
+                        if not (H > L):
+                            continue                 # no valid up-leg = no setup
+                        span = H - L
+                        z_hi = H - fib_zone_lo * span   # shallow retr (higher px)
+                        z_lo = H - fib_zone_hi * span   # deep retr (lower px)
+                        pxref = close2d[t - 1, s]
+                        if pxref < z_lo or pxref > z_hi:
+                            continue                 # not in the pullback zone
                     base = open2d[t, s]
                     px = base * (1.0 + cost_side)
                     if px <= 0.0 or not np.isfinite(px):
@@ -209,7 +225,8 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
              trail_act=0.0, trail_dist=0.03,
              cost_side=0.0, max_pos=5, init_cash=100000.0,
              fib_hi=None, fib_lo=None, fib_stop_ratio=0.786, fib_buf=0.005,
-             trail_mode=TRAIL_PCT, use_fib_target=0):
+             trail_mode=TRAIL_PCT, use_fib_target=0,
+             fib_zone_gate=0, fib_zone_lo=0.5, fib_zone_hi=0.786):
     """Python wrapper: ensures dtypes/contiguity, runs the njit core.
     Returns dict with sym, ret, reason, bars (per-trade) and equity/invested
     (per-bar). All 2D inputs are (T, S) float64/bool; strat_* are 1D per
@@ -231,6 +248,7 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
                     float(fib_stop_ratio), float(fib_buf),
                     float(trail_act), float(trail_dist),
                     int(trail_mode), int(use_fib_target),
+                    int(fib_zone_gate), float(fib_zone_lo), float(fib_zone_hi),
                     float(cost_side), int(max_pos), float(init_cash))
     sym, ret, reason, bars, strat, equity, invested, n_open = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,
