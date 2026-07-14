@@ -25,7 +25,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from portfolio_multi import BOT_FILE, STOP_MODES, prepare_grid
+from portfolio_multi import BOT_FILE, STOP_MODES, prepare_grid_cached
 from test_strategy import arg, fail
 from weisswave import portsim
 
@@ -67,9 +67,9 @@ def main():
     }
 
     t0 = time.time()
-    (A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt), frames = \
-        prepare_grid(strategies, interval, gate, market, months,
-                     atr_len=atr_len, swing_look=swing_look)
+    (A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt), cached = \
+        prepare_grid_cached(strategies, interval, gate, market, months,
+                            atr_len=atr_len, swing_look=swing_look)
     build_s = time.time() - t0
     years = max((pd.Timestamp(grid[-1]) - pd.Timestamp(grid[0])).days / 365.25,
                 1e-9)
@@ -108,7 +108,8 @@ def main():
     pd.set_option("display.width", 200)
     print(f"grid: {len(syms)} syms x {len(grid)} bars, {interval}, gate={gate}, "
           f"market={market}" + (f", last {months}mo" if months else ""))
-    print(f"built in {build_s:.1f}s; swept {len(combos)} configs in "
+    print(f"grid {'loaded from cache' if cached else 'built'} in {build_s:.1f}s; "
+          f"swept {len(combos)} configs in "
           f"{sweep_s:.1f}s ({sweep_s / len(combos) * 1000:.0f} ms/config "
           f"incl first-call compile)\n")
     print(df.head(top).to_string(index=False))

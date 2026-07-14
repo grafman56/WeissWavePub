@@ -14,6 +14,8 @@ across all: --interval, --gate, --cost-bps, --max-positions, --capital,
 --target (optional global take-profit override). ASCII output.
 """
 
+import glob
+import hashlib
 import json
 import os
 import sys
@@ -23,6 +25,7 @@ import pandas as pd
 
 from test_strategy import apply_gates, arg, emit, fail, load_universe
 from weisswave import portsim
+from weisswave.db import DB_PATH
 from weisswave.optimize import benchmark_index
 from weisswave.signals import combine_signals, recent
 
@@ -117,14 +120,16 @@ def _apply_market(frames, market):
 def prepare_grid(strategies, interval="15m",
                  gate_arg="minervini@1d,above_50ma@4h", market="none",
                  months=0, exit_cols=None, gstop=None, ghold=None,
-                 gtarget=None, atr_len=14, swing_look=20):
+                 gtarget=None, atr_len=14, swing_look=20, cutoff=None):
     """All the expensive, param-independent work: load -> gate -> market ->
     build 2D grid. Do this ONCE, then sweep exit params via portsim.simulate
-    on the returned arrays (each config = a numba call = milliseconds)."""
+    on the returned arrays (each config = a numba call = milliseconds).
+    Pass an explicit `cutoff` to override the months-derived window (the grid
+    cache uses this so a hit is a byte-identical rebuild)."""
     gates = [tuple(g.split("@", 1)) for g in gate_arg.split(",")
              if "@" in g] if gate_arg != "none" else []
-    cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
-              if months else None)
+    if cutoff is None and months:
+        cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
     frames = load_universe(interval, cutoff)
     if gates:
         frames = apply_gates(frames, gates, None)
@@ -132,6 +137,77 @@ def prepare_grid(strategies, interval="15m",
     grid = build_grid(frames, strategies, exit_cols or [], gstop, ghold,
                       gtarget, atr_len, swing_look)
     return grid, frames
+
+
+GRID_CACHE_DIR = "grid_cache"
+
+
+def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
+                     exit_cols, gstop, ghold, gtarget, atr_len, swing_look,
+                     db_mtime):
+    """A file path uniquely determined by every input build_grid consumes.
+    Same key <-> byte-identical grid, so a cache hit is always trustworthy.
+    db_mtime is in the filename (not just the hash) so stale-data grids are
+    prunable when the DB is refreshed."""
+    payload = json.dumps({
+        "strategies": strategies,      # full defs: entry/exit cols, window...
+        "interval": interval, "gate": gate_arg, "market": market,
+        "cutoff": None if cutoff is None else pd.Timestamp(cutoff).isoformat(),
+        "exit_cols": exit_cols or [], "gstop": gstop, "ghold": ghold,
+        "gtarget": gtarget, "atr_len": atr_len, "swing_look": swing_look,
+    }, sort_keys=True, default=str)
+    h = hashlib.sha1(payload.encode()).hexdigest()[:16]
+    return os.path.join(GRID_CACHE_DIR,
+                        f"grid_{interval.replace(':', '')}_{db_mtime}_{h}.npz")
+
+
+def _save_grid(path, g):
+    A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt = g
+    os.makedirs(GRID_CACHE_DIR, exist_ok=True)
+    tmp = path + ".tmp.npz"          # .npz so numpy won't append its own
+    np.savez_compressed(
+        tmp, **{f"A_{k}": v for k, v in A.items()},
+        V=V, ENT=ENT, SIDX=SIDX, EXT=EXT, syms=np.array(syms), grid=grid,
+        st_stop=st_stop, st_hold=st_hold, st_tgt=st_tgt)
+    os.replace(tmp, path)            # atomic publish; no half-written cache
+
+
+def _load_grid(path):
+    z = np.load(path)
+    A = {k[2:]: z[k] for k in z.files if k.startswith("A_")}
+    return (A, z["V"], z["ENT"], z["SIDX"], z["EXT"],
+            [str(s) for s in z["syms"]], z["grid"],
+            z["st_stop"], z["st_hold"], z["st_tgt"])
+
+
+def prepare_grid_cached(strategies, interval="15m",
+                        gate_arg="minervini@1d,above_50ma@4h", market="none",
+                        months=0, exit_cols=None, gstop=None, ghold=None,
+                        gtarget=None, atr_len=14, swing_look=20):
+    """prepare_grid with a disk cache: pay the ~grid-build once per
+    (strategies, gate, market, interval, window, params, DB-data) tuple, then
+    every later sweep loads the 2D grid in ~a second. Returns
+    (grid_tuple, cached_bool); does NOT return frames (sweeps don't need them).
+    The window is normalized to the day so repeated same-day runs hit cache."""
+    cutoff = ((pd.Timestamp.now().normalize() - pd.DateOffset(months=months))
+              if months else None)
+    path = _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
+                            exit_cols, gstop, ghold, gtarget, atr_len,
+                            swing_look, int(os.path.getmtime(DB_PATH)))
+    if os.path.exists(path):
+        return _load_grid(path), True
+    grid, _frames = prepare_grid(
+        strategies, interval, gate_arg, market, months, exit_cols, gstop,
+        ghold, gtarget, atr_len, swing_look, cutoff=cutoff)
+    _save_grid(path, grid)
+    # drop grids built against older DB data for this interval
+    mtoken = os.path.basename(path).rsplit("_", 1)[0]  # grid_<int>_<mtime>
+    for old in glob.glob(os.path.join(
+            GRID_CACHE_DIR, f"grid_{interval.replace(':', '')}_*.npz")):
+        if not os.path.basename(old).startswith(mtoken):
+            os.remove(old)
+    return grid, False
+
 
 BOT_FILE = "bot_strategies.json"
 

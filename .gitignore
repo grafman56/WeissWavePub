@@ -10,6 +10,7 @@ bot_strategies.json
 scans/
 agent-tasks/
 signals_cache/
+grid_cache/
 stock_data/
 stock_data_hourly/
 
