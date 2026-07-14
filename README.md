@@ -207,8 +207,10 @@ Current factors: `signal` (strategy-confluence count), `trend` (higher-TF
 uptrend, a signed soft-veto), `fib_prox` (closeness to a fib retracement
 level), `dip_bias` (where price sits in its recent range: +1 near the lows,
 -1 extended near the highs — the "don't buy the top" / dangerous-range read,
-adapted from the RCI trend indicator). Adding a factor is one array in
-`build_grid` + its name in
+adapted from the RCI trend indicator), `vol_dom` (WTV volume dominance —
+graded +heavy-buying / -heavy-selling, the volume confirmation from the
+WaveTrend-with-Volume port), `div` (WTV bull/bear divergence confluence over
+a recent window). Adding a factor is one array in `build_grid` + its name in
 `FACTOR_NAMES` — it's then instantly weightable and sweepable. `--conf-size`
 scales position size by the score (stronger confluence = bigger position).
 

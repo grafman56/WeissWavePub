@@ -44,10 +44,11 @@ FIB_ENTRY_MODES = {"off": portsim.FIB_ENTRY_OFF, "zone": portsim.FIB_ENTRY_ZONE,
 # (score = sum w_i * factor_i); a --w-<name> knob per factor is auto-exposed,
 # and weights are applied at sim time so they sweep cheaply. Add a factor here
 # + compute it in build_grid and it's instantly weightable/combinable.
-FACTOR_NAMES = ["signal", "trend", "fib_prox", "dip_bias"]
+FACTOR_NAMES = ["signal", "trend", "fib_prox", "dip_bias", "vol_dom", "div"]
 SIGNAL_NORM = 3.0        # strategy-confluence count that maps to factor 1.0
 FIB_PROX_BAND = 0.05     # within this frac of the leg span from a level -> ~1
 RNG_LOOK = 20            # lookback for the dip_bias "dangerous range" factor
+DIV_LOOK = 5             # a WTV divergence stays live for the div factor N bars
 # only the pivot window is baked into the grid; the fib ratio/buffer/zone are
 # applied at sim time so they stay cheaply sweepable. Default 10 = only
 # "significant" swings become pivots (matches TradingView Auto Fib depth);
@@ -157,10 +158,30 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         rng = hh - ll
         rng_pos = np.where(rng > 0, (cl - ll) / rng, 0.5)
         dip_bias = np.clip(1.0 - 2.0 * rng_pos, -1.0, 1.0)
+        # vol_dom: WTV volume-dominance, graded signed (+ heavy buying already
+        # computed by pressure_tiers, - heavy selling). THE volume confirmation
+        # -- computed upstream but never wired into what trades until now.
+        getb = (lambda name: sig[name].to_numpy(bool) if name in sig.columns
+                else np.zeros(len(sig), bool))
+        vd = np.zeros(len(sig))
+        vd[getb("buy_dominant")] = 0.3
+        vd[getb("heavy_buy")] = 0.6
+        vd[getb("very_heavy_buy")] = 1.0
+        vd[getb("sell_dominant")] = -0.3
+        vd[getb("heavy_sell")] = -0.6
+        vd[getb("very_heavy_sell")] = -1.0
+        # div: WTV divergence confluence, recent bull (+) vs bear (-)
+        bull_div = getb("wt_bull_div") | getb("wt_hidden_bull_div")
+        bear_div = getb("wt_bear_div") | getb("wt_hidden_bear_div")
+        bull_r = recent(pd.Series(bull_div, index=sig.index), DIV_LOOK)
+        bear_r = recent(pd.Series(bear_div, index=sig.index), DIV_LOOK)
+        dv = np.clip(bull_r.to_numpy(float) - bear_r.to_numpy(float), -1.0, 1.0)
         A["FACTORS"][pos, j, 0] = f_signal
         A["FACTORS"][pos, j, 1] = f_trend
         A["FACTORS"][pos, j, 2] = prox
         A["FACTORS"][pos, j, 3] = dip_bias
+        A["FACTORS"][pos, j, 4] = vd
+        A["FACTORS"][pos, j, 5] = dv
     return A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt
 
 
@@ -209,7 +230,7 @@ def prepare_grid(strategies, interval="15m",
 GRID_CACHE_DIR = "grid_cache"
 # bump when the set of arrays build_grid stores changes, so old-schema cache
 # files (which would be missing a newly-added array) can't be loaded.
-GRID_SCHEMA_VERSION = 5
+GRID_SCHEMA_VERSION = 6
 
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
