@@ -96,6 +96,43 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         EXT[pos, j] = ext_any
     return A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt
 
+
+def _apply_market(frames, market):
+    if market == "none":
+        return frames
+    ma_win = int(market.replace("sma", "") or 100)
+    didx = benchmark_index(load_universe("1d", None))
+    up = (didx > didx.rolling(ma_win, min_periods=ma_win).mean())
+    upc = pd.Series(up.to_numpy(bool),
+                    index=pd.DatetimeIndex(up.index) + pd.Timedelta(days=1))
+    upc = upc[~upc.index.duplicated(keep="last")].sort_index()
+    for s, sig in frames.items():
+        m = upc.reindex(sig.index, method="ffill").fillna(False).to_numpy(bool)
+        base = (sig["xtf_gate"].to_numpy(bool) if "xtf_gate" in sig.columns
+                else np.ones(len(sig), bool))
+        sig["xtf_gate"] = base & m
+    return frames
+
+
+def prepare_grid(strategies, interval="15m",
+                 gate_arg="minervini@1d,above_50ma@4h", market="none",
+                 months=0, exit_cols=None, gstop=None, ghold=None,
+                 gtarget=None, atr_len=14, swing_look=20):
+    """All the expensive, param-independent work: load -> gate -> market ->
+    build 2D grid. Do this ONCE, then sweep exit params via portsim.simulate
+    on the returned arrays (each config = a numba call = milliseconds)."""
+    gates = [tuple(g.split("@", 1)) for g in gate_arg.split(",")
+             if "@" in g] if gate_arg != "none" else []
+    cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
+              if months else None)
+    frames = load_universe(interval, cutoff)
+    if gates:
+        frames = apply_gates(frames, gates, None)
+    frames = _apply_market(frames, market)
+    grid = build_grid(frames, strategies, exit_cols or [], gstop, ghold,
+                      gtarget, atr_len, swing_look)
+    return grid, frames
+
 BOT_FILE = "bot_strategies.json"
 
 
