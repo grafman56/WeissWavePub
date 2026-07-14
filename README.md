@@ -1,5 +1,8 @@
 # WeissWave
 
+> **📊 [RESULTS.md](RESULTS.md) — methodology, honesty guarantees, and the key
+> walk-forward findings** (stocks lose to buy-and-hold; crypto beats it +64%).
+
 A backtesting framework for multi-timeframe intraday trading strategies —
 grown out of a hand-written VectorBT prototype into a self-contained,
 dependency-light engine. It ports the "WaveTrend with Volume" (WTV) and
