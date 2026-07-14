@@ -3,7 +3,10 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
-## Unreleased
+## 0.9.0 — 2026-07-14
+
+Fibonacci structure toolkit + weighted-confluence entry, all sim-time
+tunable and swept on a disk-cached grid. numba is now the default engine.
 
 - **Confluence entry — weighted factor stack** (`--conf-entry`): entries can
   fire from a weighted sum of factors (`score = Σ w·factor >= --conf-threshold`)
