@@ -11,6 +11,7 @@ scans/
 agent-tasks/
 signals_cache/
 grid_cache/
+sweep_results/
 stock_data/
 stock_data_hourly/
 

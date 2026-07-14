@@ -5,6 +5,15 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Programmatic sweep API + result store** (toward agent-scale search): the
+  sweep is now a callable `run_sweep(spec_dict) -> DataFrame` (spec keys are
+  the CLI flags), sharing the exact tested parser with the CLI. Every run's
+  full results are persisted to `sweep_results/*.parquet` tagged with a grid
+  signature, scoring mode, spec and timestamp; `load_results()` schema-unions
+  them so an agent can query "what's been tested, what won" instead of
+  re-running. The CLI gains `--save-results`. Fitness is already walk-forward
+  robust (`--wf-folds`), so a search optimizes robustness, not one lucky
+  window. (Parallel execution is the next piece.)
 - **Higher-TF setup screen — the cascade** (`--htf-screen --htf-threshold`):
   weekly setup factors (`htf_trend` = EMA-stack alignment across 20/50/100/200,
   `htf_ema_dist` = distance from the weekly EMA, `htf_fib_prox` = nearest weekly

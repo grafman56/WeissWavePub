@@ -36,8 +36,10 @@ applied at sim time, so it sweeps cheaply. Example:
 Strategies from bot_strategies.json (or --strategies=names). ASCII output.
 """
 
+import glob
 import itertools
 import json
+import os
 import sys
 import time
 
@@ -56,8 +58,41 @@ def listarg(args, name, default, cast):
     return [cast(x) for x in v.split(",")] if v not in (None, "") else default
 
 
-def main():
-    args = sys.argv[1:]
+RESULTS_DIR = "sweep_results"
+
+
+def save_results(df, meta, spec):
+    """Append a run's full results to the store: one parquet per run under
+    sweep_results/, tagged with a grid signature, scoring mode, spec and
+    timestamp. Accumulated runs are queryable (e.g. duckdb
+    read_parquet('sweep_results/*.parquet', union_by_name=true)) so an agent
+    can see what's been tested and what won instead of re-running it."""
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    ts = pd.Timestamp.now()
+    out = df.copy()
+    out["run_ts"] = ts.isoformat()
+    out["grid_sig"] = (f"{meta['interval']}|{meta['gate']}|{meta['market']}|"
+                       f"{meta['months']}mo")
+    out["scoring"] = "wf" if meta["wf"] else "oos" if meta["oos"] else "full"
+    out["spec"] = json.dumps(spec, default=str)
+    fname = os.path.join(RESULTS_DIR,
+                         f"run_{ts.strftime('%Y%m%d_%H%M%S_%f')}.parquet")
+    out.to_parquet(fname)
+    return fname
+
+
+def load_results():
+    """All accumulated sweep results, schema-unioned across runs (empty frame
+    if none). The query surface for agents: 'what's been tested, what won'."""
+    files = glob.glob(os.path.join(RESULTS_DIR, "*.parquet"))
+    return (pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+            if files else pd.DataFrame())
+
+
+def _sweep(args):
+    """Run the sweep described by CLI-style `args`; return (full results
+    DataFrame sorted by the ranking column, meta dict). No printing -- the
+    callable core shared by the CLI and run_sweep()."""
     interval = arg(args, "interval", "15m")
     gate = arg(args, "gate", "minervini@1d,above_50ma@4h")
     market = arg(args, "market", "none")
@@ -212,38 +247,87 @@ def main():
     sweep_s = time.time() - t1
 
     sort_col = "wf_mean" if wf else "tr_CAGR" if oos else "CAGR%"
-    df = pd.DataFrame(rows).sort_values(sort_col, ascending=False)
-    # drop constant swept columns for readability
+    df = pd.DataFrame(rows).sort_values(sort_col, ascending=False) \
+        .reset_index(drop=True)
     drop_cols = ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
                  "entry", "trail", "tgt", "mp"]
     if conf_entry:
         drop_cols += ["thr"] + [f"w_{n}" for n in FACTOR_NAMES]
     if htf_screen:
         drop_cols += ["htf_thr"]
-    for c in drop_cols:
-        if c in df.columns and df[c].nunique() == 1:
-            df = df.drop(columns=c)
+    meta = {"interval": interval, "gate": gate, "market": market,
+            "months": months, "n_syms": len(syms), "n_bars": len(grid),
+            "start": str(pd.Timestamp(grid[0]).date()),
+            "end": str(pd.Timestamp(grid[-1]).date()), "cached": cached,
+            "build_s": build_s, "sweep_s": sweep_s, "n_combos": len(combos),
+            "n_sims": len(combos) * (wf_folds if wf else 2 if oos else 1),
+            "sort_col": sort_col, "drop_cols": drop_cols, "top": top,
+            "wf": wf, "wf_folds": wf_folds, "oos": oos, "oos_split": oos_split,
+            "fold_starts": [str(pd.Timestamp(grid[b[i]]).date())
+                            for i in range(wf_folds)] if wf else [],
+            "oos_test_start": str(pd.Timestamp(grid[sp]).date()) if oos else ""}
+    return df, meta
+
+
+def _display(df, meta):
+    """Pretty-print a sweep result (drops constant swept columns)."""
+    d = df.copy()
+    for c in meta["drop_cols"]:
+        if c in d.columns and d[c].nunique() == 1:
+            d = d.drop(columns=c)
     pd.set_option("display.width", 220)
-    print(f"grid: {len(syms)} syms x {len(grid)} bars, {interval}, gate={gate}, "
-          f"market={market}" + (f", last {months}mo" if months else ""))
-    if wf:
-        edges = " | ".join(f"{pd.Timestamp(grid[b[i]]).date()}"
-                           for i in range(wf_folds))
-        print(f"walk-forward {wf_folds} folds (folds% = CAGR per fold, ranked "
-              f"by mean); fold starts: {edges} | "
-              f"{pd.Timestamp(grid[-1]).date()}")
-    elif oos:
-        print(f"OOS split {oos_split:.0%}: train {pd.Timestamp(grid[0]).date()} "
-              f"-> {pd.Timestamp(grid[sp - 1]).date()}   test "
-              f"{pd.Timestamp(grid[sp]).date()} -> "
-              f"{pd.Timestamp(grid[-1]).date()}   (ranked by TRAIN, judged on "
-              f"TEST)")
-    n_sims = len(combos) * (wf_folds if wf else 2 if oos else 1)
-    print(f"grid {'loaded from cache' if cached else 'built'} in {build_s:.1f}s; "
-          f"swept {len(combos)} configs ({n_sims} sims) in "
-          f"{sweep_s:.1f}s ({sweep_s / n_sims * 1000:.0f} ms/sim "
+    print(f"grid: {meta['n_syms']} syms x {meta['n_bars']} bars, "
+          f"{meta['interval']}, gate={meta['gate']}, market={meta['market']}"
+          + (f", last {meta['months']}mo" if meta["months"] else ""))
+    if meta["wf"]:
+        print(f"walk-forward {meta['wf_folds']} folds (folds% = CAGR per fold, "
+              f"ranked by mean); fold starts: "
+              f"{' | '.join(meta['fold_starts'])} | {meta['end']}")
+    elif meta["oos"]:
+        print(f"OOS split {meta['oos_split']:.0%}: train {meta['start']} -> "
+              f"test {meta['oos_test_start']} -> {meta['end']}   (ranked by "
+              f"TRAIN, judged on TEST)")
+    print(f"grid {'loaded from cache' if meta['cached'] else 'built'} in "
+          f"{meta['build_s']:.1f}s; swept {meta['n_combos']} configs "
+          f"({meta['n_sims']} sims) in {meta['sweep_s']:.1f}s "
+          f"({meta['sweep_s'] / meta['n_sims'] * 1000:.0f} ms/sim "
           f"incl first-call compile)\n")
-    print(df.head(top).to_string(index=False))
+    print(d.head(meta["top"]).to_string(index=False))
+
+
+def _spec_to_args(spec):
+    """Turn a {name: value} spec dict into CLI-style --name=value args (lists
+    become comma lists, True becomes a bare flag) so agents can drive the sweep
+    programmatically through the same tested parser the CLI uses."""
+    out = []
+    for k, v in spec.items():
+        if v is True:
+            out.append(f"--{k}")
+        elif v is False or v is None:
+            continue
+        elif isinstance(v, (list, tuple)):
+            out.append(f"--{k}=" + ",".join(str(x) for x in v))
+        else:
+            out.append(f"--{k}={v}")
+    return out
+
+
+def run_sweep(spec, save=True):
+    """Programmatic entry point (the agent API): run a sweep from a spec dict,
+    persist the full results to the store, and return the results DataFrame.
+    `spec` keys are the CLI flag names, e.g. {"months": 12, "stop-mode": "fib",
+    "conf-entry": True, "w-signal": [0, 1, 2], "wf-folds": 6}."""
+    df, meta = _sweep(_spec_to_args(spec))
+    if save:
+        save_results(df, meta, spec)
+    return df
+
+
+def main():
+    df, meta = _sweep(sys.argv[1:])
+    if "--save-results" in sys.argv:
+        save_results(df, meta, {"argv": " ".join(sys.argv[1:])})
+    _display(df, meta)
 
 
 if __name__ == "__main__":
