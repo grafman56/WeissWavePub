@@ -221,10 +221,15 @@ class Engine:
         return ((cagr - hold) * 100,
                 (cagr - self.best_mainstream(sl, yrs)) * 100, ntr)
 
-    def score_raw(self, c):
-        """Score one config across the training folds. Returns a PLAIN DICT so
-        it can cross a process boundary; no dedup here (the parent owns that)."""
-        out = [self.excess_fold(sl, c) for sl in self.folds]
+    def score_raw(self, c, folds=None):
+        """Score one config across `folds` (default: the whole-history training
+        folds). Returns a PLAIN DICT so it can cross a process boundary; no
+        dedup here (the parent owns that).
+
+        The folds are a PARAMETER, not a property of the engine, so nested
+        validation can re-run a search inside an arbitrary training window
+        without rebuilding the grid."""
+        out = [self.excess_fold(sl, c) for sl in (folds or self.folds)]
         exc = [e for e, _, _ in out]
         return {"sig": cfg_sig(c),
                 "exc": round(float(np.mean(exc)), 1),
@@ -242,8 +247,71 @@ def _worker_init(args):
     _W["eng"] = Engine(parse_job(args), quiet=True)
 
 
-def _worker_score(c):
-    return c, _W["eng"].score_raw(c)
+def _worker_score(task):
+    c, folds = task
+    return c, _W["eng"].score_raw(c, folds)
+
+
+def evolve(eng, sp, folds, seed, iters, gens, elite, min_trades,
+           pool=None, seen=None, quiet=False, wf_label=""):
+    """Seed random configs, then evolve the elite against `folds`. Returns the
+    population sorted best-first.
+
+    THE FOLDS ARE AN ARGUMENT. That is what makes nested validation possible:
+    the same search can be re-run inside an arbitrary training window, having
+    never seen the slice it will later be judged on."""
+    r = np.random.default_rng(seed)
+    seen = {} if seen is None else seen
+    reused = [0]
+
+    def apply(c, s):
+        c["_sig"] = s.get("sig") or cfg_sig(c)
+        c["_exc"], c["_min"] = s["exc"], s["min"]
+        c["_pos"], c["_ntr"], c["_ms"] = s["pos"], s["ntr"], s.get("ms", np.nan)
+        # A config that never traded is UNFIT, not neutral -- otherwise its 0.0
+        # outranks every config that actually took risk and lost.
+        c["_fit"] = (-np.inf if 0 <= c["_ntr"] < min_trades
+                     else round(c["_exc"] + sp["fitness"]["worst_fold_penalty"]
+                                * min(0.0, c["_min"]), 1))
+        return c
+
+    def score_batch(cfgs):
+        todo, done = [], []
+        for c in cfgs:
+            s = seen.get(cfg_sig(c))
+            if s is not None:
+                reused[0] += 1
+                done.append(apply(c, {**s, "sig": cfg_sig(c)}))
+            else:
+                todo.append(c)
+        if todo:
+            res = (pool.map(_worker_score, [(c, folds) for c in todo],
+                            chunksize=4) if pool
+                   else [(c, eng.score_raw(c, folds)) for c in todo])
+            for c, s in res:
+                seen[s["sig"]] = s
+                done.append(apply(c, s))
+        return done
+
+    pop = score_batch([sample_cfg(r, sp, K, HTF_START) for _ in range(iters)])
+    n = len(pop)
+    for g in range(gens):                            # evolution (sequential)
+        pop.sort(key=lambda c: c["_fit"], reverse=True)
+        pop = pop[:elite]
+        best = pop[0]
+        if not quiet:
+            dead = sum(1 for c in pop if 0 <= c["_ntr"] < min_trades)
+            print(f"  {wf_label}gen {g}: best wf_exc={best['_exc']} "
+                  f"(min={best['_min']}, pos={best['_pos']}/{len(folds)}, "
+                  f"trades={best['_ntr']}, stop={best['stop']}, "
+                  f"trail={best['trail']}); {dead}/{len(pop)} elite unfit",
+                  flush=True)
+        kids = [mutate_cfg(pop[int(r.integers(len(pop)))], r, sp, K)
+                for _ in range(iters)]
+        pop += score_batch(kids)
+        n += len(kids)
+    pop.sort(key=lambda c: c["_fit"], reverse=True)
+    return pop, n, reused[0]
 
 
 def main():
@@ -276,20 +344,6 @@ def main():
             seen[row["cfg_sig"]] = {"exc": row["wf_exc"], "min": row["wf_min"],
                                     "pos": pos, "ntr": ntr,
                                     "ms": row.get("wf_ms_exc", np.nan)}
-    reused = [0]
-
-    def apply(c, s):
-        c["_sig"] = s["sig"] if "sig" in s else cfg_sig(c)
-        c["_exc"], c["_min"] = s["exc"], s["min"]
-        c["_pos"], c["_ntr"], c["_ms"] = s["pos"], s["ntr"], s.get("ms", np.nan)
-        # A config that never traded is UNFIT, not neutral -- otherwise its 0.0
-        # outranks every config that actually took risk and lost. Recomputed
-        # every time so a fitness-formula change leaves no stale scores.
-        c["_fit"] = (-np.inf if 0 <= c["_ntr"] < min_trades
-                     else round(c["_exc"] + FIT["worst_fold_penalty"]
-                                * min(0.0, c["_min"]), 1))
-        return c
-
     jobs = max(1, job["jobs"])
     pool = None
     if jobs > 1:
@@ -297,41 +351,10 @@ def main():
         print(f"fanning configs across {jobs} worker processes "
               f"(each holds its own grid copy)", flush=True)
 
-    def score_batch(cfgs):
-        """Dedup against what's already known, then fan the rest out."""
-        todo, done = [], []
-        for c in cfgs:
-            s = seen.get(cfg_sig(c))
-            if s is not None:
-                reused[0] += 1
-                done.append(apply(c, {**s, "sig": cfg_sig(c)}))
-            else:
-                todo.append(c)
-        if todo:
-            res = (pool.map(_worker_score, todo, chunksize=4) if pool
-                   else [(c, eng.score_raw(c)) for c in todo])
-            for c, s in res:
-                seen[s["sig"]] = s
-                done.append(apply(c, s))
-        return done
-
     t1 = time.time()
-    pop = score_batch([sample_cfg(r, sp, K, HTF_START) for _ in range(iters)])
-    n = len(pop)
-    for g in range(gens):                            # evolution (sequential)
-        pop.sort(key=lambda c: c["_fit"], reverse=True)
-        pop = pop[:elite]
-        best = pop[0]
-        dead = sum(1 for c in pop if 0 <= c["_ntr"] < min_trades)
-        print(f"  gen {g}: best wf_exc={best['_exc']} (min={best['_min']}, "
-              f"pos={best['_pos']}/{wf_folds}, trades={best['_ntr']}, "
-              f"stop={best['stop']}, trail={best['trail']}); "
-              f"{dead}/{len(pop)} elite unfit", flush=True)
-        kids = [mutate_cfg(pop[int(r.integers(len(pop)))], r, sp, K)
-                for _ in range(iters)]
-        pop += score_batch(kids)
-        n += len(kids)
-    pop.sort(key=lambda c: c["_fit"], reverse=True)
+    pop, n, n_reused = evolve(eng, sp, eng.folds, job["seed"], iters, gens,
+                              elite, min_trades, pool=pool, seen=seen)
+    reused = [n_reused]
     if pool:
         pool.close()
         pool.join()
