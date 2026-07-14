@@ -103,6 +103,7 @@ def _sweep(args, shard=None):
     interval = arg(args, "interval", "15m")
     gate = arg(args, "gate", "minervini@1d,above_50ma@4h")
     market = arg(args, "market", "none")
+    universe = arg(args, "universe", "stocks")   # stocks | crypto | all | list
     months = int(arg(args, "months", "0"))
     cost_side = float(arg(args, "cost-bps", "0")) / 10000.0 / 2
     capital = float(arg(args, "capital", "100000"))
@@ -175,7 +176,8 @@ def _sweep(args, shard=None):
     t0 = time.time()
     (A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt), cached = \
         prepare_grid_cached(strategies, interval, gate, market, months,
-                            atr_len=atr_len, swing_look=swing_look, fib=fib)
+                            atr_len=atr_len, swing_look=swing_look, fib=fib,
+                            universe=universe)
     build_s = time.time() - t0
 
     def sim_metrics(Ax, Vx, ENTx, SIDXx, EXTx, gridx,

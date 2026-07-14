@@ -241,6 +241,22 @@ def attach_htf(frames):
     return frames
 
 
+def select_universe(frames, universe):
+    """Keep only the requested symbols (crypto and stocks live in one table).
+    universe: 'stocks' (default; excludes crypto -USD pairs), 'crypto' (only
+    -USD pairs), 'all', or an explicit comma list of symbols. Mixing 24/7
+    crypto with session-based stocks in one grid is a mess, so pick one."""
+    if universe in (None, "", "all"):
+        return frames
+    if universe == "crypto":
+        keep = {s for s in frames if s.endswith("-USD")}
+    elif universe == "stocks":
+        keep = {s for s in frames if not s.endswith("-USD")}
+    else:
+        keep = set(universe.split(","))
+    return {s: sig for s, sig in frames.items() if s in keep}
+
+
 def _apply_market(frames, market):
     if market == "none":
         return frames
@@ -262,7 +278,7 @@ def prepare_grid(strategies, interval="15m",
                  gate_arg="minervini@1d,above_50ma@4h", market="none",
                  months=0, exit_cols=None, gstop=None, ghold=None,
                  gtarget=None, atr_len=14, swing_look=20, cutoff=None,
-                 fib=None):
+                 fib=None, universe="stocks"):
     """All the expensive, param-independent work: load -> gate -> market ->
     build 2D grid. Do this ONCE, then sweep exit params via portsim.simulate
     on the returned arrays (each config = a numba call = milliseconds).
@@ -274,7 +290,7 @@ def prepare_grid(strategies, interval="15m",
              if "@" in g] if gate_arg != "none" else []
     if cutoff is None and months:
         cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
-    frames = load_universe(interval, cutoff)
+    frames = select_universe(load_universe(interval, cutoff), universe)
     if gates:
         frames = apply_gates(frames, gates, None)
     frames = _apply_market(frames, market)
@@ -292,7 +308,7 @@ GRID_SCHEMA_VERSION = 7
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                      exit_cols, gstop, ghold, gtarget, atr_len, swing_look,
-                     db_mtime, fib=None):
+                     db_mtime, fib=None, universe="stocks"):
     """A file path uniquely determined by every input build_grid consumes.
     Same key <-> byte-identical grid, so a cache hit is always trustworthy.
     db_mtime is in the filename (not just the hash) so stale-data grids are
@@ -304,6 +320,7 @@ def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
         "exit_cols": exit_cols or [], "gstop": gstop, "ghold": ghold,
         "gtarget": gtarget, "atr_len": atr_len, "swing_look": swing_look,
         "fib": {**FIB_DEFAULTS, **(fib or {})}, "schema": GRID_SCHEMA_VERSION,
+        "universe": universe,
     }, sort_keys=True, default=str)
     h = hashlib.sha1(payload.encode()).hexdigest()[:16]
     return os.path.join(GRID_CACHE_DIR,
@@ -332,7 +349,8 @@ def _load_grid(path):
 def prepare_grid_cached(strategies, interval="15m",
                         gate_arg="minervini@1d,above_50ma@4h", market="none",
                         months=0, exit_cols=None, gstop=None, ghold=None,
-                        gtarget=None, atr_len=14, swing_look=20, fib=None):
+                        gtarget=None, atr_len=14, swing_look=20, fib=None,
+                        universe="stocks"):
     """prepare_grid with a disk cache: pay the ~grid-build once per
     (strategies, gate, market, interval, window, params, DB-data) tuple, then
     every later sweep loads the 2D grid in ~a second. Returns
@@ -342,12 +360,14 @@ def prepare_grid_cached(strategies, interval="15m",
               if months else None)
     path = _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                             exit_cols, gstop, ghold, gtarget, atr_len,
-                            swing_look, int(os.path.getmtime(DB_PATH)), fib)
+                            swing_look, int(os.path.getmtime(DB_PATH)), fib,
+                            universe)
     if os.path.exists(path):
         return _load_grid(path), True
     grid, _frames = prepare_grid(
         strategies, interval, gate_arg, market, months, exit_cols, gstop,
-        ghold, gtarget, atr_len, swing_look, cutoff=cutoff, fib=fib)
+        ghold, gtarget, atr_len, swing_look, cutoff=cutoff, fib=fib,
+        universe=universe)
     _save_grid(path, grid)
     # drop grids built against older DB data for this interval
     mtoken = os.path.basename(path).rsplit("_", 1)[0]  # grid_<int>_<mtime>
@@ -452,7 +472,8 @@ def main():
     market = arg(args, "market", "sma100")      # market-regime filter; none to disable
     cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
               if months else None)
-    frames = load_universe(interval, cutoff)
+    frames = select_universe(load_universe(interval, cutoff),
+                             arg(args, "universe", "stocks"))
     if gates:
         frames = apply_gates(frames, gates, None)
 
