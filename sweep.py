@@ -18,6 +18,10 @@ Sweep axes accept comma lists; the cartesian product is run:
 Out-of-sample: --oos-split=0.7 tunes/ranks configs on the earlier 70% (TRAIN)
 and scores each on the held-out later 30% (TEST) it never saw -- so a config
 whose te_CAGR holds near its tr_CAGR is robust; one that craters overfit.
+Walk-forward: --wf-folds=6 splits the whole history into 6 contiguous folds
+and scores every config on each; ranks by mean CAGR and shows wf_min / wf_pos
+(folds positive) -- a config that's green across most folds survived regimes,
+not one lucky window.
     --trail-dist=0.03,0.06,0.10   --target=0,0.06   --max-positions=3,5
 
 Fixed (rebuild the grid to change): strategies, --gate, --market, --interval,
@@ -83,6 +87,10 @@ def main():
     # each honestly on the later TEST slice it never saw. 0 = off (full period).
     oos_split = float(arg(args, "oos-split", "0"))
     oos = oos_split > 0.0
+    # walk-forward: split the whole history into N contiguous folds and score
+    # every config on each -- a robust edge holds across regimes, not one window.
+    wf_folds = int(arg(args, "wf-folds", "0"))
+    wf = wf_folds >= 2
 
     with open(arg(args, "file", BOT_FILE), encoding="utf-8") as f:
         strategies = json.load(f)
@@ -140,11 +148,15 @@ def main():
                 "avg": round(r.mean() * 100, 2) if n else 0}
 
     full = (A, V, ENT, SIDX, EXT, grid)
-    if oos:
+    sub = lambda a, x, y: {k: v[x:y] for k, v in a.items()}
+    seg = lambda x, y: (sub(A, x, y), V[x:y], ENT[x:y], SIDX[x:y], EXT[x:y],
+                        grid[x:y])
+    if wf:
+        b = [int(len(grid) * i / wf_folds) for i in range(wf_folds + 1)]
+        folds = [seg(b[i], b[i + 1]) for i in range(wf_folds)]
+    elif oos:
         sp = int(len(grid) * oos_split)
-        sub = lambda a, x, y: {k: v[x:y] for k, v in a.items()}
-        tr = (sub(A, 0, sp), V[:sp], ENT[:sp], SIDX[:sp], EXT[:sp], grid[:sp])
-        te = (sub(A, sp, None), V[sp:], ENT[sp:], SIDX[sp:], EXT[sp:], grid[sp:])
+        tr, te = seg(0, sp), seg(sp, None)
 
     combos = list(itertools.product(
         ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
@@ -164,7 +176,13 @@ def main():
             row["thr"] = thr
             for nm, wv in zip(FACTOR_NAMES, wvec):
                 row[f"w_{nm}"] = wv
-        if oos:
+        if wf:
+            cagrs = [sim_metrics(*fold, *p)["CAGR"] for fold in folds]
+            row.update({"folds%": " ".join(f"{c:g}" for c in cagrs),
+                        "wf_mean": round(sum(cagrs) / len(cagrs), 1),
+                        "wf_min": round(min(cagrs), 1),
+                        "wf_pos": f"{sum(c > 0 for c in cagrs)}/{wf_folds}"})
+        elif oos:
             mtr = sim_metrics(*tr, *p)
             mte = sim_metrics(*te, *p)
             row.update({"tr_CAGR": mtr["CAGR"], "tr_DD": mtr["DD"],
@@ -177,7 +195,7 @@ def main():
         rows.append(row)
     sweep_s = time.time() - t1
 
-    sort_col = "tr_CAGR" if oos else "CAGR%"
+    sort_col = "wf_mean" if wf else "tr_CAGR" if oos else "CAGR%"
     df = pd.DataFrame(rows).sort_values(sort_col, ascending=False)
     # drop constant swept columns for readability
     drop_cols = ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
@@ -190,13 +208,19 @@ def main():
     pd.set_option("display.width", 220)
     print(f"grid: {len(syms)} syms x {len(grid)} bars, {interval}, gate={gate}, "
           f"market={market}" + (f", last {months}mo" if months else ""))
-    if oos:
+    if wf:
+        edges = " | ".join(f"{pd.Timestamp(grid[b[i]]).date()}"
+                           for i in range(wf_folds))
+        print(f"walk-forward {wf_folds} folds (folds% = CAGR per fold, ranked "
+              f"by mean); fold starts: {edges} | "
+              f"{pd.Timestamp(grid[-1]).date()}")
+    elif oos:
         print(f"OOS split {oos_split:.0%}: train {pd.Timestamp(grid[0]).date()} "
               f"-> {pd.Timestamp(grid[sp - 1]).date()}   test "
               f"{pd.Timestamp(grid[sp]).date()} -> "
               f"{pd.Timestamp(grid[-1]).date()}   (ranked by TRAIN, judged on "
               f"TEST)")
-    n_sims = len(combos) * (2 if oos else 1)
+    n_sims = len(combos) * (wf_folds if wf else 2 if oos else 1)
     print(f"grid {'loaded from cache' if cached else 'built'} in {build_s:.1f}s; "
           f"swept {len(combos)} configs ({n_sims} sims) in "
           f"{sweep_s:.1f}s ({sweep_s / n_sims * 1000:.0f} ms/sim "

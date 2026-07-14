@@ -5,6 +5,12 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Walk-forward scoring** (`sweep.py --wf-folds=6`): splits the whole history
+  into N contiguous folds and scores every config on each, ranking by mean CAGR
+  and showing `folds%` (CAGR per fold), `wf_min` (worst fold) and `wf_pos`
+  (folds positive). An edge that's green across most folds survived regimes,
+  not one lucky window — the robust upgrade over a single split. Reuses the
+  sliceable `sim_metrics`; N sims/config, ~28 ms/sim on the cached grid.
 - **Out-of-sample scoring** (`sweep.py --oos-split=0.7`): ranks configs on the
   earlier TRAIN slice and scores each on the held-out later TEST slice it never
   saw, showing `tr_CAGR`/`te_CAGR` side by side — a config whose test holds near

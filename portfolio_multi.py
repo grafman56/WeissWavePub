@@ -156,7 +156,8 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         hh = pd.Series(hi).rolling(RNG_LOOK, min_periods=1).max().to_numpy()
         ll = pd.Series(lo).rolling(RNG_LOOK, min_periods=1).min().to_numpy()
         rng = hh - ll
-        rng_pos = np.where(rng > 0, (cl - ll) / rng, 0.5)
+        rng_pos = np.where(rng > 0, (cl - ll) / np.where(rng > 0, rng, 1.0),
+                           0.5)
         dip_bias = np.clip(1.0 - 2.0 * rng_pos, -1.0, 1.0)
         # vol_dom: WTV volume-dominance, graded signed (+ heavy buying already
         # computed by pressure_tiers, - heavy selling). THE volume confirmation
