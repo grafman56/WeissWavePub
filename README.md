@@ -214,6 +214,18 @@ a recent window). Adding a factor is one array in `build_grid` + its name in
 `FACTOR_NAMES` — it's then instantly weightable and sweepable. `--conf-size`
 scales position size by the score (stronger confluence = bigger position).
 
+**Higher-timeframe setup screen (the cascade).** The `htf_*` factors are
+computed on the **weekly** timeframe (resampled from the 25-yr daily,
+reindexed onto the trading grid using only *closed* weeks — no lookahead) and
+form a separate **screen**: `--htf-screen` makes a stock eligible only when
+its weighted weekly-setup score clears `--htf-threshold`. So the weekly picks
+*which stocks* are set up (`htf_trend` = weekly EMA-stack alignment across
+20/50/100/200, `htf_ema_dist` = distance from the weekly EMA, `htf_fib_prox` =
+nearest weekly fib level), and the entry factors above time *when* to trade
+them on the low timeframe — the higher-TF-screens-then-lower-TF-executes
+cascade, both levels tunable. The screen is a soft, tunable gate: a threshold
+on a weighted score, not a hard rule.
+
 ## Trust: the engine is tested
 
 A backtester that silently gets fills or timing wrong is worse than none —

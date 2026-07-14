@@ -44,11 +44,20 @@ FIB_ENTRY_MODES = {"off": portsim.FIB_ENTRY_OFF, "zone": portsim.FIB_ENTRY_ZONE,
 # (score = sum w_i * factor_i); a --w-<name> knob per factor is auto-exposed,
 # and weights are applied at sim time so they sweep cheaply. Add a factor here
 # + compute it in build_grid and it's instantly weightable/combinable.
-FACTOR_NAMES = ["signal", "trend", "fib_prox", "dip_bias", "vol_dom", "div"]
+# entry factors (indices 0..5) decide WHEN to enter on the trading TF; the
+# htf_* factors (the tail) are the higher-TF SETUP screen (which stocks are
+# eligible). HTF_START = count of entry factors; the engine sums entry factors
+# for the entry score and htf factors for the screen score, each thresholded.
+FACTOR_NAMES = ["signal", "trend", "fib_prox", "dip_bias", "vol_dom", "div",
+                "htf_trend", "htf_ema_dist", "htf_fib_prox"]
+HTF_START = 6            # first index of the higher-TF (weekly) factors
 SIGNAL_NORM = 3.0        # strategy-confluence count that maps to factor 1.0
 FIB_PROX_BAND = 0.05     # within this frac of the leg span from a level -> ~1
 RNG_LOOK = 20            # lookback for the dip_bias "dangerous range" factor
 DIV_LOOK = 5             # a WTV divergence stays live for the div factor N bars
+WEEKLY_EMAS = (20, 50, 100, 200)   # Paul's EMA ladder, on the weekly TF
+HTF_EMA_REF = 50         # reference weekly EMA for htf_ema_dist
+HTF_FIB_LR = 10          # weekly pivot window for htf_fib_prox
 # only the pivot window is baked into the grid; the fib ratio/buffer/zone are
 # applied at sim time so they stay cheaply sweepable. Default 10 = only
 # "significant" swings become pivots (matches TradingView Auto Fib depth);
@@ -183,7 +192,53 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         A["FACTORS"][pos, j, 3] = dip_bias
         A["FACTORS"][pos, j, 4] = vd
         A["FACTORS"][pos, j, 5] = dv
+        # higher-TF (weekly) setup factors, pre-attached to the frame by
+        # attach_htf (0 when the symbol has no weekly data)
+        for fk, name in enumerate(FACTOR_NAMES[HTF_START:], start=HTF_START):
+            if name in sig.columns:
+                A["FACTORS"][pos, j, fk] = sig[name].to_numpy(float)
     return A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt
+
+
+def attach_htf(frames):
+    """Attach weekly SETUP factors to each intraday frame, reindexed with only
+    weeks that have CLOSED (no lookahead -- and it respects "the weekly close
+    is the truth"). Weekly bars are resampled from the 25yr daily data:
+      htf_trend    : weekly EMA-stack alignment (close>20>50>100>200), -1..1
+      htf_ema_dist : distance above/below the reference weekly EMA, -1..1
+      htf_fib_prox : closeness to the nearest weekly fib retracement level
+    These feed the higher-TF screen (which stocks are eligible)."""
+    daily = load_universe("1d", None)
+    agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last",
+           "Volume": "sum"}
+    names = FACTOR_NAMES[HTF_START:]
+    for s, sig in frames.items():
+        du = daily.get(s)
+        if du is None or len(du) < WEEKLY_EMAS[-1]:
+            for n in names:
+                sig[n] = 0.0
+            continue
+        w = du.resample("W").agg(agg).dropna()
+        c = w["Close"]
+        emas = {n: c.ewm(span=n, adjust=False, min_periods=1).mean()
+                for n in WEEKLY_EMAS}
+        stack = [c] + [emas[n] for n in WEEKLY_EMAS]
+        ups = sum((stack[i] > stack[i + 1]).astype(int)
+                  for i in range(len(stack) - 1))
+        wt = ups / (len(stack) - 1) * 2.0 - 1.0            # -1..1 EMA alignment
+        eref = emas[HTF_EMA_REF]
+        wd = ((c - eref) / eref / 0.5).clip(-1.0, 1.0)      # dist vs ref EMA
+        p1, p2, _ = trend_points(w["High"], w["Low"], HTF_FIB_LR, HTF_FIB_LR)
+        leg = (p2 - p1).where(lambda x: x > 0)
+        wp = pd.Series(0.0, index=c.index)
+        for r in (0.382, 0.5, 0.618, 0.786):
+            d = (c - (p2 - r * leg)).abs() / leg
+            wp = np.maximum(wp, (1.0 - d / FIB_PROX_BAND).clip(lower=0.0)
+                            .fillna(0.0))
+        for n, wser in zip(names, (wt, wd, wp)):
+            sig[n] = wser.reindex(sig.index, method="ffill").fillna(0.0) \
+                .to_numpy(float)
+    return frames
 
 
 def _apply_market(frames, market):
@@ -223,6 +278,7 @@ def prepare_grid(strategies, interval="15m",
     if gates:
         frames = apply_gates(frames, gates, None)
     frames = _apply_market(frames, market)
+    frames = attach_htf(frames)
     grid = build_grid(frames, strategies, exit_cols or [], gstop, ghold,
                       gtarget, atr_len, swing_look, fib["left"], fib["right"])
     return grid, frames
@@ -231,7 +287,7 @@ def prepare_grid(strategies, interval="15m",
 GRID_CACHE_DIR = "grid_cache"
 # bump when the set of arrays build_grid stores changes, so old-schema cache
 # files (which would be missing a newly-added array) can't be loaded.
-GRID_SCHEMA_VERSION = 6
+GRID_SCHEMA_VERSION = 7
 
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
@@ -357,6 +413,12 @@ def main():
     conf_threshold = float(arg(args, "conf-threshold", "1.0"))
     conf_size = 1 if ("--conf-size" in args or arg(args, "conf-size", "0")
                       not in ("0", "no", "false", "none", "")) else 0
+    # higher-TF (weekly) SETUP screen: a stock is eligible only if its weighted
+    # weekly setup score (the htf_* factors) clears --htf-threshold. A tunable
+    # screen -- weights + threshold decide what a "good weekly setup" is.
+    htf_screen = 1 if ("--htf-screen" in args or arg(args, "htf-screen", "0")
+                       not in ("0", "no", "false", "none", "")) else 0
+    htf_threshold = float(arg(args, "htf-threshold", "0.0"))
     # trailing stop: once a trade is up +trail_act, ratchet the stop up. Mode
     # pct = trail_dist below the high-water mark; structure = under the last
     # confirmed swing low; fib = under each cleared fib/extension rung (protect
@@ -418,6 +480,7 @@ def main():
     if engine == "numba":
         import time as _time
         _t = _time.time()
+        frames = attach_htf(frames)
         A, V, ENT, SIDX, EXT, syms, master, st_stop, st_hold, st_tgt = \
             build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
                        atr_len, swing_look, fib["left"], fib["right"])
@@ -434,7 +497,9 @@ def main():
             fib_entry=FIB_ENTRY_MODES.get(fib_entry, 0), fib_zone_lo=fib_zone_lo,
             fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look,
             factors=A["FACTORS"], weights=weights, conf_entry=conf_entry,
-            conf_threshold=conf_threshold, conf_size=conf_size)
+            conf_threshold=conf_threshold, conf_size=conf_size,
+            htf_start=HTF_START, htf_screen=htf_screen,
+            htf_threshold=htf_threshold)
         why = {1: "stop", 2: "trail", 3: "target", 4: "signal", 5: "time",
                6: "eod"}
         trades = [{"symbol": syms[res["sym"][i]],
@@ -465,6 +530,7 @@ def main():
             + (" conf[" + ",".join(f"{n}={w:g}" for n, w in
                zip(FACTOR_NAMES, weights)) + f"]>={conf_threshold:g}"
                + (" size~score" if conf_size else "") if conf_entry else "")
+            + (f" htf-screen>={htf_threshold:g}" if htf_screen else "")
             + (f" trail={trail_mode}" if trail_mode in ("structure", "fib")
                else f" trail={trail_act:.0%}@{trail_dist:.0%}" if trail_act
                else "")

@@ -40,6 +40,20 @@ FIB_ENTRY_OFF, FIB_ENTRY_ZONE, FIB_ENTRY_BOUNCE, FIB_ENTRY_BOUNCE_TREND = \
 
 
 @njit(cache=True)
+def _conf_scores(factors, weights, t, s, htf_start, K):
+    """(entry_score, screen_score) at bar t-1 for symbol s: entry factors
+    [0:htf_start] decide WHEN to enter; htf factors [htf_start:K] are the
+    higher-TF setup screen (which stocks are eligible)."""
+    e = 0.0
+    for kk in range(htf_start):
+        e += weights[kk] * factors[t - 1, s, kk]
+    h = 0.0
+    for kk in range(htf_start, K):
+        h += weights[kk] * factors[t - 1, s, kk]
+    return e, h
+
+
+@njit(cache=True)
 def _simulate(open2d, high2d, low2d, close2d, valid,
               ent, score, sidx, ext,
               atr, swing, p1, p2, p3, gate,
@@ -49,6 +63,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
               trail_act, trail_dist, trail_mode, use_fib_target, fib_ext,
               fib_entry, fib_zone_lo, fib_zone_hi, fib_bounce_look,
               factors, weights, conf_entry, conf_threshold, conf_size,
+              htf_start, htf_screen, htf_threshold,
               cost_side, max_pos, init_cash):
     T, S = open2d.shape
     cash = init_cash
@@ -166,10 +181,9 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                 if not (valid[t, s] and (not held[s])):
                     continue
                 if conf_entry:
-                    cscore = 0.0
-                    for kk in range(K):
-                        cscore += weights[kk] * factors[t - 1, s, kk]
-                    base_ok = cscore >= conf_threshold
+                    e, h = _conf_scores(factors, weights, t, s, htf_start, K)
+                    base_ok = e >= conf_threshold and (
+                        htf_screen == 0 or h >= htf_threshold)
                 elif trend_only:
                     base_ok = gate[t - 1, s] > 0.5
                 else:
@@ -184,12 +198,11 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                     if not (valid[t, s] and (not held[s])):
                         continue
                     if conf_entry:
-                        cscore = 0.0
-                        for kk in range(K):
-                            cscore += weights[kk] * factors[t - 1, s, kk]
-                        if cscore < conf_threshold:
+                        e, h = _conf_scores(factors, weights, t, s, htf_start, K)
+                        if e < conf_threshold or (
+                                htf_screen != 0 and h < htf_threshold):
                             continue
-                        cs[k] = s; sc[k] = cscore; k += 1
+                        cs[k] = s; sc[k] = e; k += 1
                     elif (gate[t - 1, s] > 0.5 if trend_only
                           else ent[t - 1, s]):
                         cs[k] = s; sc[k] = score[t - 1, s]; k += 1
@@ -325,7 +338,7 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
              2.0), gate=None, fib_entry=FIB_ENTRY_OFF, fib_zone_lo=0.5,
              fib_zone_hi=0.786, fib_bounce_look=3,
              factors=None, weights=None, conf_entry=0, conf_threshold=1.0,
-             conf_size=0):
+             conf_size=0, htf_start=-1, htf_screen=0, htf_threshold=0.0):
     """Python wrapper: ensures dtypes/contiguity, runs the njit core.
     Returns dict with sym, ret, reason, bars (per-trade) and equity/invested
     (per-bar). All 2D inputs are (T, S) float64/bool; strat_* are 1D per
@@ -349,6 +362,7 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
     fac = np.zeros((T, S, 1)) if factors is None else f(factors)
     wts = (np.zeros(fac.shape[2]) if weights is None
            else np.ascontiguousarray(weights, np.float64))
+    hstart = fac.shape[2] if htf_start < 0 else int(htf_start)  # -1 = no split
     out = _simulate(f(open2d), f(high2d), f(low2d), f(close2d), b(valid),
                     b(ent), f(score), i(sidx), b(ext), f(atr), f(swing),
                     a1, a2, a3, gt,
@@ -362,6 +376,7 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
                     int(fib_bounce_look),
                     fac, wts, int(conf_entry), float(conf_threshold),
                     int(conf_size),
+                    hstart, int(htf_screen), float(htf_threshold),
                     float(cost_side), int(max_pos), float(init_cash))
     sym, ret, reason, bars, strat, equity, invested, n_open = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,

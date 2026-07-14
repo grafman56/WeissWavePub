@@ -14,6 +14,9 @@ Sweep axes accept comma lists; the cartesian product is run:
     --conf-entry  --w-signal=0,1,2  --w-trend=0,1  --w-fib_prox=0,1,2
         --conf-threshold=0.5,1,1.5   (weighted-confluence entry; each factor's
         --w-<name> is a sweep axis, 0 = mute it)
+    --htf-screen --w-htf_trend=1 --w-htf_ema_dist=1 --htf-threshold=0,0.5,1
+        (weekly SETUP screen: eligible only if the weighted htf_* score clears
+        the threshold -- higher-TF screens which stocks, entry times the rest)
 
 Out-of-sample: --oos-split=0.7 tunes/ranks configs on the earlier 70% (TRAIN)
 and scores each on the held-out later 30% (TEST) it never saw -- so a config
@@ -42,7 +45,8 @@ import numpy as np
 import pandas as pd
 
 from portfolio_multi import (BOT_FILE, FACTOR_NAMES, FIB_ENTRY_MODES,
-                             STOP_MODES, TRAIL_MODES, prepare_grid_cached)
+                             HTF_START, STOP_MODES, TRAIL_MODES,
+                             prepare_grid_cached)
 from test_strategy import arg, fail
 from weisswave import portsim
 
@@ -83,6 +87,12 @@ def main():
     else:
         w_lists = [[1.0] for _ in FACTOR_NAMES]   # muted: no wasted combos
         thr_list = [1.0]
+    # higher-TF weekly setup screen (tunable): eligible only if the weighted
+    # htf_* score clears --htf-threshold (a sweepable axis).
+    htf_screen = 1 if ("--htf-screen" in args or arg(args, "htf-screen", "0")
+                       not in ("0", "no", "false", "none", "")) else 0
+    htf_thr_list = listarg(args, "htf-threshold", [0.0], float) \
+        if htf_screen else [0.0]
     # out-of-sample split: rank configs on the earlier TRAIN slice, then score
     # each honestly on the later TEST slice it never saw. 0 = off (full period).
     oos_split = float(arg(args, "oos-split", "0"))
@@ -123,7 +133,8 @@ def main():
     build_s = time.time() - t0
 
     def sim_metrics(Ax, Vx, ENTx, SIDXx, EXTx, gridx,
-                    sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr, wvec):
+                    sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr,
+                    htf_thr, wvec):
         """Run one config over a (possibly sliced) grid, return its metrics."""
         yrs = max((pd.Timestamp(gridx[-1]) - pd.Timestamp(gridx[0])).days
                   / 365.25, 1e-9)
@@ -139,7 +150,8 @@ def main():
             fib_entry=FIB_ENTRY_MODES.get(fe, 0), fib_zone_lo=fib_zone_lo,
             fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look,
             factors=Ax["FACTORS"], weights=wvec, conf_entry=conf_entry,
-            conf_threshold=thr, conf_size=conf_size)
+            conf_threshold=thr, conf_size=conf_size, htf_start=HTF_START,
+            htf_screen=htf_screen, htf_threshold=htf_thr)
         eq = pd.Series(res["equity"]); r = res["ret"]; n = len(r)
         return {"CAGR": round(((eq.iloc[-1] / capital) ** (1 / yrs) - 1) * 100, 1),
                 "DD": round((eq / eq.cummax() - 1).min() * 100, 1),
@@ -161,13 +173,15 @@ def main():
     combos = list(itertools.product(
         ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
         ax["ftg"], ax["fe"], ax["ta"], ax["td"], ax["tgt"], ax["mp"],
-        thr_list, *w_lists))
+        thr_list, htf_thr_list, *w_lists))
     rows = []
     t1 = time.time()
     for combo in combos:
         sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr = combo[:13]
-        wvec = np.array(combo[13:])            # per-factor weights (order=names)
-        p = (sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr, wvec)
+        htf_thr = combo[13]
+        wvec = np.array(combo[14:])            # per-factor weights (order=names)
+        p = (sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr, htf_thr,
+             wvec)
         row = {
             "stop": sm, "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
             "tmode": tm, "ftgt": ftg, "entry": fe, "trail": f"{ta:.0%}/{td:.0%}"
@@ -176,6 +190,8 @@ def main():
             row["thr"] = thr
             for nm, wv in zip(FACTOR_NAMES, wvec):
                 row[f"w_{nm}"] = wv
+        if htf_screen:
+            row["htf_thr"] = htf_thr
         if wf:
             cagrs = [sim_metrics(*fold, *p)["CAGR"] for fold in folds]
             row.update({"folds%": " ".join(f"{c:g}" for c in cagrs),
@@ -202,6 +218,8 @@ def main():
                  "entry", "trail", "tgt", "mp"]
     if conf_entry:
         drop_cols += ["thr"] + [f"w_{n}" for n in FACTOR_NAMES]
+    if htf_screen:
+        drop_cols += ["htf_thr"]
     for c in drop_cols:
         if c in df.columns and df[c].nunique() == 1:
             df = df.drop(columns=c)

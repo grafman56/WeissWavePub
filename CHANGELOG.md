@@ -5,6 +5,18 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Higher-TF setup screen — the cascade** (`--htf-screen --htf-threshold`):
+  weekly setup factors (`htf_trend` = EMA-stack alignment across 20/50/100/200,
+  `htf_ema_dist` = distance from the weekly EMA, `htf_fib_prox` = nearest weekly
+  fib level) are resampled from the 25-yr daily and reindexed onto the trading
+  grid using only *closed* weeks (no lookahead — verified by prefix recompute).
+  They form a separate screen score; a stock is eligible only if its weighted
+  weekly score clears the threshold, so the weekly picks *which stocks* are set
+  up and the entry factors time *when* to trade them. A tunable soft gate (a
+  threshold on a weighted score), both weights and threshold sweepable; the
+  engine keeps entry factors [0:HTF_START] and screen factors [HTF_START:]
+  separate. Grid schema -> v7. Trust: htf-screen scenarios in `test_portsim.py`
+  (setup pass/fail gates entry; htf factors don't leak into the entry score).
 - **Walk-forward scoring** (`sweep.py --wf-folds=6`): splits the whole history
   into N contiguous folds and scores every config on each, ranking by mean CAGR
   and showing `folds%` (CAGR per fold), `wf_min` (worst fold) and `wf_pos`

@@ -260,6 +260,30 @@ check("confluence: a single factor's weight can carry the entry",
       conf_n([0.0, 3.0], 1.0) == 1)         # 3*0.5 = 1.5 >= 1.0
 
 
+# 16. higher-TF screen: htf factors [htf_start:] gate eligibility separately,
+# and do NOT contribute to the entry score (entry uses factors [0:htf_start])
+o, h, l, c = grid([[(10, 10, 10, 10)], [(11, 11, 11, 11)], [(12, 12, 12, 12)]])
+cent = [[False], [False], [False]]
+
+
+def screen_n(htf_val, htf_thr, screen=1, thr=1.0):
+    fa = np.zeros((3, 1, 3))            # factor 0 = entry, factor 2 = htf
+    fa[0, 0, 0] = 1.0
+    fa[0, 0, 2] = htf_val
+    return len(run(o, h, l, c, cent, hold=1, conf_entry=1, factors=fa,
+                   weights=np.array([1.0, 1.0, 1.0]), conf_threshold=thr,
+                   htf_start=2, htf_screen=screen, htf_threshold=htf_thr)["ret"])
+
+
+check("htf screen: setup passes (htf>=thr) -> entry", screen_n(1.0, 0.5) == 1)
+check("htf screen: setup fails (htf<thr) -> screened out", screen_n(0.0, 0.5) == 0)
+check("htf screen OFF -> enters despite failing setup",
+      screen_n(0.0, 0.5, screen=0) == 1)
+check("htf factor does NOT leak into the entry score",
+      # entry score = f0 only = 1.0; thr 1.5 -> no entry even with htf=1 & screen off
+      screen_n(1.0, 0.0, screen=0, thr=1.5) == 0)
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL PORTSIM TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))
