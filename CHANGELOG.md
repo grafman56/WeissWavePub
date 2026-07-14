@@ -5,6 +5,18 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Confluence entry — weighted factor stack** (`--conf-entry`): entries can
+  fire from a weighted sum of factors (`score = Σ w·factor >= --conf-threshold`)
+  instead of a single hard signal, so no factor is a gate you discard when
+  tuning might have saved it. `build_grid` stacks each factor into one array;
+  the engine combines them by a weight vector at sim time; a `--w-<name>` knob
+  per factor is auto-exposed (0 = mute) and is a cheap sweep axis. Adding a
+  factor = one array + its name in `FACTOR_NAMES`, then it's instantly
+  weightable/combinable — the "combine any/all in any combination" goal.
+  Starter factors: `signal`, `trend` (signed soft-veto), `fib_prox`.
+  `--conf-size` scales position size by the score. Trust: weighted-sum entry
+  scenarios in `test_portsim.py` (threshold, muting, single-factor carry);
+  grid schema -> v4.
 - **Three-point fib + fib-ladder trailing**: the fib is now a proper
   three-point construct — point1 (leg-start low), point2 (swing high), point3
   (pullback low), via `structure.trend_points` — so retracement/zone/stop

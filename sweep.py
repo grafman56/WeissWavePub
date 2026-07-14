@@ -11,6 +11,9 @@ Sweep axes accept comma lists; the cartesian product is run:
         bounce needs an up-close off the band, bounce-trend needs only trend)
     --trail-mode=pct,structure,fib   --fib-ext=1.0,1.618  (fib-ladder trail)
     --trail-activate=0,0.04,0.06
+    --conf-entry  --w-signal=0,1,2  --w-trend=0,1  --w-fib_prox=0,1,2
+        --conf-threshold=0.5,1,1.5   (weighted-confluence entry; each factor's
+        --w-<name> is a sweep axis, 0 = mute it)
     --trail-dist=0.03,0.06,0.10   --target=0,0.06   --max-positions=3,5
 
 Fixed (rebuild the grid to change): strategies, --gate, --market, --interval,
@@ -30,8 +33,8 @@ import time
 import numpy as np
 import pandas as pd
 
-from portfolio_multi import (BOT_FILE, FIB_ENTRY_MODES, STOP_MODES,
-                             TRAIL_MODES, prepare_grid_cached)
+from portfolio_multi import (BOT_FILE, FACTOR_NAMES, FIB_ENTRY_MODES,
+                             STOP_MODES, TRAIL_MODES, prepare_grid_cached)
 from test_strategy import arg, fail
 from weisswave import portsim
 
@@ -61,6 +64,17 @@ def main():
     fib_bounce_look = int(arg(args, "fib-bounce-look", "3"))
     fib_ext = [float(x) for x in arg(args, "fib-ext", "1.0,1.272,1.618,2.0")
                .split(",")]
+    # confluence entry: when on, sweep the per-factor weights + threshold
+    conf_entry = 1 if ("--conf-entry" in args or arg(args, "conf-entry", "0")
+                       not in ("0", "no", "false", "none", "")) else 0
+    conf_size = 1 if ("--conf-size" in args or arg(args, "conf-size", "0")
+                      not in ("0", "no", "false", "none", "")) else 0
+    if conf_entry:
+        w_lists = [listarg(args, f"w-{n}", [1.0], float) for n in FACTOR_NAMES]
+        thr_list = listarg(args, "conf-threshold", [1.0], float)
+    else:
+        w_lists = [[1.0] for _ in FACTOR_NAMES]   # muted: no wasted combos
+        thr_list = [1.0]
 
     with open(arg(args, "file", BOT_FILE), encoding="utf-8") as f:
         strategies = json.load(f)
@@ -96,10 +110,13 @@ def main():
 
     combos = list(itertools.product(
         ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
-        ax["ftg"], ax["fe"], ax["ta"], ax["td"], ax["tgt"], ax["mp"]))
+        ax["ftg"], ax["fe"], ax["ta"], ax["td"], ax["tgt"], ax["mp"],
+        thr_list, *w_lists))
     rows = []
     t1 = time.time()
-    for sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp in combos:
+    for combo in combos:
+        sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr = combo[:13]
+        wvec = np.array(combo[13:])            # per-factor weights (order=names)
         tgt_arr = np.full_like(st_tgt, tg) if tg > 0 else st_tgt
         res = portsim.simulate(
             A["O"], A["H"], A["L"], A["C"], V, ENT, A["SCORE"], SIDX, EXT,
@@ -110,14 +127,21 @@ def main():
             fib_stop_ratio=fr, fib_buf=fb, trail_mode=TRAIL_MODES.get(tm, 0),
             fib_ext=fib_ext, use_fib_target=ftg, gate=A["GATE"],
             fib_entry=FIB_ENTRY_MODES.get(fe, 0), fib_zone_lo=fib_zone_lo,
-            fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look)
+            fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look,
+            factors=A["FACTORS"], weights=wvec, conf_entry=conf_entry,
+            conf_threshold=thr, conf_size=conf_size)
         eq = pd.Series(res["equity"])
         r = res["ret"]
         n = len(r)
-        rows.append({
+        row = {
             "stop": sm, "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
             "tmode": tm, "ftgt": ftg, "entry": fe, "trail": f"{ta:.0%}/{td:.0%}"
-            if ta > 0 else "-", "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp,
+            if ta > 0 else "-", "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp}
+        if conf_entry:
+            row["thr"] = thr
+            for nm, wv in zip(FACTOR_NAMES, wvec):
+                row[f"w_{nm}"] = wv
+        rows.append({**row,
             "CAGR%": round(((eq.iloc[-1] / capital) ** (1 / years) - 1) * 100, 1),
             "maxDD%": round((eq / eq.cummax() - 1).min() * 100, 1),
             "inv%": round(res["invested"].mean() * 100, 0),
@@ -128,9 +152,12 @@ def main():
 
     df = pd.DataFrame(rows).sort_values("CAGR%", ascending=False)
     # drop constant columns for readability
-    for c in ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
-              "entry", "trail", "tgt", "mp"]:
-        if df[c].nunique() == 1:
+    drop_cols = ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
+                 "entry", "trail", "tgt", "mp"]
+    if conf_entry:
+        drop_cols += ["thr"] + [f"w_{n}" for n in FACTOR_NAMES]
+    for c in drop_cols:
+        if c in df.columns and df[c].nunique() == 1:
             df = df.drop(columns=c)
     pd.set_option("display.width", 200)
     print(f"grid: {len(syms)} syms x {len(grid)} bars, {interval}, gate={gate}, "

@@ -48,6 +48,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
               fib_stop_ratio, fib_buf,
               trail_act, trail_dist, trail_mode, use_fib_target, fib_ext,
               fib_entry, fib_zone_lo, fib_zone_hi, fib_bounce_look,
+              factors, weights, conf_entry, conf_threshold, conf_size,
               cost_side, max_pos, init_cash):
     T, S = open2d.shape
     cash = init_cash
@@ -153,26 +154,45 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
 
         # ---- entries: rank candidates by score, fill free slots -----------
         if n_open < max_pos and t > 0:
-            # base entry signal: the strategy signal, except BOUNCE_TREND
-            # mode where the trend gate alone qualifies (the fib bounce below
-            # is then the actual trigger).
+            # base entry signal by mode:
+            #   confluence -> weighted sum of factors >= threshold (score also
+            #                 ranks the candidates, and can size them)
+            #   bounce-trend -> the trend gate qualifies (fib bounce triggers)
+            #   otherwise -> the strategy signal
             trend_only = fib_entry == FIB_ENTRY_BOUNCE_TREND
+            K = factors.shape[2]
             ncand = 0
             for s in range(S):
-                base_ok = gate[t - 1, s] > 0.5 if trend_only else ent[t - 1, s]
-                if valid[t, s] and (not held[s]) and base_ok:
+                if not (valid[t, s] and (not held[s])):
+                    continue
+                if conf_entry:
+                    cscore = 0.0
+                    for kk in range(K):
+                        cscore += weights[kk] * factors[t - 1, s, kk]
+                    base_ok = cscore >= conf_threshold
+                elif trend_only:
+                    base_ok = gate[t - 1, s] > 0.5
+                else:
+                    base_ok = ent[t - 1, s]
+                if base_ok:
                     ncand += 1
             if ncand > 0:
                 cs = np.empty(ncand, np.int64)
                 sc = np.empty(ncand)
                 k = 0
                 for s in range(S):
-                    base_ok = (gate[t - 1, s] > 0.5 if trend_only
-                               else ent[t - 1, s])
-                    if valid[t, s] and (not held[s]) and base_ok:
-                        cs[k] = s
-                        sc[k] = score[t - 1, s]
-                        k += 1
+                    if not (valid[t, s] and (not held[s])):
+                        continue
+                    if conf_entry:
+                        cscore = 0.0
+                        for kk in range(K):
+                            cscore += weights[kk] * factors[t - 1, s, kk]
+                        if cscore < conf_threshold:
+                            continue
+                        cs[k] = s; sc[k] = cscore; k += 1
+                    elif (gate[t - 1, s] > 0.5 if trend_only
+                          else ent[t - 1, s]):
+                        cs[k] = s; sc[k] = score[t - 1, s]; k += 1
                 order = np.argsort(-sc)          # highest score first
                 mkt = 0.0
                 for s in range(S):
@@ -185,8 +205,9 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                     s = cs[order[oi]]
                     # fib entry filter on the [lo, hi] retracement band of the
                     # current up-leg L->H. All refs are bars <= t-1 (the entry
-                    # fills at open[t]), so no lookahead.
-                    if fib_entry != FIB_ENTRY_OFF:
+                    # fills at open[t]), so no lookahead. Skipped under the
+                    # confluence path (it is its own entry decision).
+                    if fib_entry != FIB_ENTRY_OFF and not conf_entry:
                         H = p2[t - 1, s]             # swing high
                         L = p1[t - 1, s]             # leg-start low
                         if not (H > L):
@@ -220,10 +241,20 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                     if px <= 0.0 or not np.isfinite(px):
                         continue
                     alloc = eq_now / max_pos
+                    # size by conviction: scale the slot allocation by the
+                    # confluence score relative to the entry threshold (capped
+                    # to the slot), so stronger setups get more capital.
+                    if conf_entry and conf_size and conf_threshold > 0.0:
+                        conv = sc[order[oi]] / (2.0 * conf_threshold)
+                        if conv > 1.0:
+                            conv = 1.0
+                        if conv < 0.0:
+                            conv = 0.0
+                        alloc *= conv
                     if alloc > cash:
                         alloc = cash
                     if alloc <= 0.0:
-                        break
+                        continue
                     si = sidx[t - 1, s]
                     if stop_mode == ATR:
                         stop_px = base - atr_mult * atr[t - 1, s]
@@ -292,7 +323,9 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
              p1=None, p2=None, p3=None, fib_stop_ratio=0.786, fib_buf=0.005,
              trail_mode=TRAIL_PCT, use_fib_target=0, fib_ext=(1.0, 1.272, 1.618,
              2.0), gate=None, fib_entry=FIB_ENTRY_OFF, fib_zone_lo=0.5,
-             fib_zone_hi=0.786, fib_bounce_look=3):
+             fib_zone_hi=0.786, fib_bounce_look=3,
+             factors=None, weights=None, conf_entry=0, conf_threshold=1.0,
+             conf_size=0):
     """Python wrapper: ensures dtypes/contiguity, runs the njit core.
     Returns dict with sym, ret, reason, bars (per-trade) and equity/invested
     (per-bar). All 2D inputs are (T, S) float64/bool; strat_* are 1D per
@@ -311,6 +344,11 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
     a2 = z if p2 is None else f(p2)
     a3 = z if p3 is None else f(p3)
     gt = z if gate is None else f(gate)
+    T, S = z.shape
+    # factor stack (T, S, K) + weight vector; default a single all-zero factor
+    fac = np.zeros((T, S, 1)) if factors is None else f(factors)
+    wts = (np.zeros(fac.shape[2]) if weights is None
+           else np.ascontiguousarray(weights, np.float64))
     out = _simulate(f(open2d), f(high2d), f(low2d), f(close2d), b(valid),
                     b(ent), f(score), i(sidx), b(ext), f(atr), f(swing),
                     a1, a2, a3, gt,
@@ -322,6 +360,8 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
                     f(np.asarray(fib_ext)),
                     int(fib_entry), float(fib_zone_lo), float(fib_zone_hi),
                     int(fib_bounce_look),
+                    fac, wts, int(conf_entry), float(conf_threshold),
+                    int(conf_size),
                     float(cost_side), int(max_pos), float(init_cash))
     sym, ret, reason, bars, strat, equity, invested, n_open = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,

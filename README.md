@@ -187,6 +187,28 @@ python sweep.py --months=12 --stop-mode=swing,atr \
 - Everything is benchmarked against simply *holding the traded names* over
   the same window, so "active trading beat buy-and-hold" is an honest test.
 
+### Confluence entry (weighted factors, nothing hard-coded)
+
+`--conf-entry` switches entries from a single signal to a **weighted sum of
+factors** — the philosophy being that no factor should be a hard gate you
+discard when a little tuning might have made it work. Each factor is a per-bar
+signed strength; the confluence score is `Σ (weight · factor)`, and you enter
+when it clears `--conf-threshold`. Every factor exposes a `--w-<name>` knob
+(0 = mute it), and the weights are applied at sim time so they **sweep
+cheaply** — the whole point is to *discover* good weights by testing, not
+decide them up front.
+
+```
+python sweep.py --months=12 --stop-mode=fib --conf-entry \
+    --w-signal=0,1,2 --w-trend=0,1 --w-fib_prox=0,2 --conf-threshold=1.0,1.5
+```
+
+Current factors: `signal` (strategy-confluence count), `trend` (higher-TF
+uptrend, a signed soft-veto), `fib_prox` (closeness to a fib retracement
+level). Adding a factor is one array in `build_grid` + its name in
+`FACTOR_NAMES` — it's then instantly weightable and sweepable. `--conf-size`
+scales position size by the score (stronger confluence = bigger position).
+
 ## Trust: the engine is tested
 
 A backtester that silently gets fills or timing wrong is worse than none —

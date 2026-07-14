@@ -37,6 +37,16 @@ TRAIL_MODES = {"pct": portsim.TRAIL_PCT, "structure": portsim.TRAIL_STRUCT,
 FIB_ENTRY_MODES = {"off": portsim.FIB_ENTRY_OFF, "zone": portsim.FIB_ENTRY_ZONE,
                    "bounce": portsim.FIB_ENTRY_BOUNCE,
                    "bounce-trend": portsim.FIB_ENTRY_BOUNCE_TREND}
+
+# ── Confluence factors ─────────────────────────────────────────────────────
+# Each factor is a per-bar signed strength in ~[-1, 1] (+ = argues for a long,
+# - = against). The engine's confluence entry combines them as a WEIGHTED SUM
+# (score = sum w_i * factor_i); a --w-<name> knob per factor is auto-exposed,
+# and weights are applied at sim time so they sweep cheaply. Add a factor here
+# + compute it in build_grid and it's instantly weightable/combinable.
+FACTOR_NAMES = ["signal", "trend", "fib_prox"]
+SIGNAL_NORM = 3.0        # strategy-confluence count that maps to factor 1.0
+FIB_PROX_BAND = 0.05     # within this frac of the leg span from a level -> ~1
 # only the pivot window is baked into the grid; the fib ratio/buffer/zone are
 # applied at sim time so they stay cheaply sweepable. Default 10 = only
 # "significant" swings become pivots (matches TradingView Auto Fib depth);
@@ -61,6 +71,7 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
     gpos = {ts: i for i, ts in enumerate(grid)}
     A = {k: np.zeros((T, S)) for k in ("O", "H", "L", "C", "SCORE", "ATR",
                                        "SW", "P1", "P2", "P3", "GATE")}
+    A["FACTORS"] = np.zeros((T, S, len(FACTOR_NAMES)))   # (T, S, K) factor stack
     V = np.zeros((T, S), bool)
     ENT = np.zeros((T, S), bool)
     SIDX = np.zeros((T, S), np.int64)
@@ -119,6 +130,27 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         A["SCORE"][pos, j] = np.where(best_score < 0, 0.0, best_score)
         SIDX[pos, j] = best_idx
         EXT[pos, j] = ext_any
+
+        # ── confluence factors (signed strength ~[-1, 1]) ──────────────────
+        # signal: strategy-confluence count, normalized, 0..1
+        f_signal = np.minimum(1.0, np.where(best_score < 0, 0.0, best_score)
+                              / SIGNAL_NORM)
+        # trend: +1 in the higher-TF uptrend, -1 otherwise (a soft veto)
+        f_trend = np.where(g, 1.0, -1.0)
+        # fib_prox: closeness of Close to the nearest retracement level of the
+        # P1->P2 up-leg (on a level -> ~1, far -> 0)
+        p1v, p2v = p1.to_numpy(), p2.to_numpy()
+        legv = p2v - p1v
+        okleg = legv > 0
+        prox = np.zeros(len(sig))
+        for r in (0.382, 0.5, 0.618, 0.786):
+            lvl = p2v - r * legv
+            d = np.abs(cl - lvl) / np.where(okleg, legv, np.nan)
+            prox = np.maximum(prox, np.where(
+                okleg, np.maximum(0.0, 1.0 - d / FIB_PROX_BAND), 0.0))
+        A["FACTORS"][pos, j, 0] = f_signal
+        A["FACTORS"][pos, j, 1] = f_trend
+        A["FACTORS"][pos, j, 2] = prox
     return A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt
 
 
@@ -167,7 +199,7 @@ def prepare_grid(strategies, interval="15m",
 GRID_CACHE_DIR = "grid_cache"
 # bump when the set of arrays build_grid stores changes, so old-schema cache
 # files (which would be missing a newly-added array) can't be loaded.
-GRID_SCHEMA_VERSION = 3
+GRID_SCHEMA_VERSION = 4
 
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
@@ -283,6 +315,16 @@ def main():
     fib_zone_lo = float(arg(args, "fib-zone-lo", "0.5"))
     fib_zone_hi = float(arg(args, "fib-zone-hi", "0.786"))
     fib_bounce_look = int(arg(args, "fib-bounce-look", "3"))
+    # confluence entry: enter when the weighted sum of factors clears a
+    # threshold. --w-<factor> weights each factor (default 1); nothing is a
+    # hard gate -- set a weight to 0 to mute a factor, tune to taste/sweep.
+    conf_entry = 1 if ("--conf-entry" in args or arg(args, "conf-entry", "0")
+                       not in ("0", "no", "false", "none", "")) else 0
+    weights = np.array([float(arg(args, f"w-{n}", "1.0"))
+                        for n in FACTOR_NAMES])
+    conf_threshold = float(arg(args, "conf-threshold", "1.0"))
+    conf_size = 1 if ("--conf-size" in args or arg(args, "conf-size", "0")
+                      not in ("0", "no", "false", "none", "")) else 0
     # trailing stop: once a trade is up +trail_act, ratchet the stop up. Mode
     # pct = trail_dist below the high-water mark; structure = under the last
     # confirmed swing low; fib = under each cleared fib/extension rung (protect
@@ -358,7 +400,9 @@ def main():
             trail_mode=TRAIL_MODES.get(trail_mode, 0), fib_ext=fib_ext,
             use_fib_target=use_fib_target, gate=A["GATE"],
             fib_entry=FIB_ENTRY_MODES.get(fib_entry, 0), fib_zone_lo=fib_zone_lo,
-            fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look)
+            fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look,
+            factors=A["FACTORS"], weights=weights, conf_entry=conf_entry,
+            conf_threshold=conf_threshold, conf_size=conf_size)
         why = {1: "stop", 2: "trail", 3: "target", 4: "signal", 5: "time",
                6: "eod"}
         trades = [{"symbol": syms[res["sym"][i]],
@@ -386,6 +430,9 @@ def main():
             + (" tp=fib" if use_fib_target and stop_mode == "fib" else "")
             + (f" entry={fib_entry}[{fib_zone_lo:.3f}-{fib_zone_hi:.3f}]"
                if fib_entry != "off" else "")
+            + (" conf[" + ",".join(f"{n}={w:g}" for n, w in
+               zip(FACTOR_NAMES, weights)) + f"]>={conf_threshold:g}"
+               + (" size~score" if conf_size else "") if conf_entry else "")
             + (f" trail={trail_mode}" if trail_mode in ("structure", "fib")
                else f" trail={trail_act:.0%}@{trail_dist:.0%}" if trail_act
                else "")

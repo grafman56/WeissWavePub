@@ -240,6 +240,26 @@ check("bounce-trend: no entry when the trend gate is off",
                      mode=FIB_ENTRY_BOUNCE_TREND, gate=np.zeros((5, 1))) == 0)
 
 
+# 15. confluence entry: weighted sum of factors >= threshold drives the entry
+o, h, l, c = grid([[(10, 10, 10, 10)], [(11, 11, 11, 11)], [(12, 12, 12, 12)]])
+cent = [[False], [False], [False]]        # NO strategy signal -> conf drives it
+fac = np.zeros((3, 1, 2)); fac[0, 0, 0] = 1.0; fac[0, 0, 1] = 0.5   # at entry bar
+
+
+def conf_n(weights, thr, **kw):
+    return len(run(o, h, l, c, cent, hold=1, conf_entry=1, factors=fac,
+                   weights=np.array(weights), conf_threshold=thr, **kw)["ret"])
+
+
+check("confluence: score>=threshold enters with no strategy signal",
+      conf_n([1.0, 1.0], 1.0) == 1)         # 1.0+0.5 = 1.5 >= 1.0
+check("confluence: score<threshold is skipped", conf_n([1.0, 1.0], 2.0) == 0)
+check("confluence: zero weights -> no entry (weights drive it)",
+      conf_n([0.0, 0.0], 0.5) == 0)
+check("confluence: a single factor's weight can carry the entry",
+      conf_n([0.0, 3.0], 1.0) == 1)         # 3*0.5 = 1.5 >= 1.0
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL PORTSIM TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))
