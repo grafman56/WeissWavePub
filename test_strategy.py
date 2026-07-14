@@ -55,25 +55,40 @@ STRATEGIES_PATH = "strategies.json"
 RESULTS_LOG = os.path.join("agent-tasks", "results.log")
 CACHE_DIR = "signals_cache"
 
+# BUMP THIS whenever build_signals gains/renames/changes a column. The cache
+# was keyed on the DB mtime ALONE, so a signal-code change did not invalidate
+# it: a stale cache would quietly serve frames missing the new columns, and
+# apply_gates DROPS any symbol whose gate column is absent -- i.e. asking for a
+# brand-new gate would silently empty the universe instead of erroring.
+# v2 = RCI columns added (rci_bull/bear/breakup/breakdn/heat/...).
+SIGNALS_SCHEMA_VERSION = 2
+
 
 def load_universe(interval: str, cutoff) -> dict:
-    """Signal frames for the whole universe via a parquet cache keyed on
-    the DB file's mtime: first call after a fetch rebuilds (~2 min), every
-    later call loads in seconds. build_signals default parameters only."""
+    """Signal frames for the whole universe via a parquet cache keyed on the DB
+    file's mtime AND the signal schema version: first call after a fetch (or a
+    schema bump) rebuilds (~2 min), every later call loads in seconds.
+    build_signals default parameters only."""
     key = os.path.join(CACHE_DIR,
                        f"signals_{interval.replace(':', '')}_"
-                       f"{int(os.path.getmtime(DB_PATH))}.parquet")
+                       f"{int(os.path.getmtime(DB_PATH))}_"
+                       f"v{SIGNALS_SCHEMA_VERSION}.parquet")
     if not os.path.exists(key):
         try:
             con = connect(read_only=True)
         except Exception:
             # DB is write-locked (backfill/fetch running). Iterate on the
             # newest existing cache rather than blocking the whole workflow.
-            older = glob.glob(os.path.join(CACHE_DIR,
-                                           f"signals_{interval}_*.parquet"))
+            # only THIS schema version: an older-schema cache lacks columns the
+            # caller may be asking for, and a missing gate column silently
+            # drops symbols rather than erroring
+            older = glob.glob(os.path.join(
+                CACHE_DIR, f"signals_{interval.replace(':', '')}_*_"
+                           f"v{SIGNALS_SCHEMA_VERSION}.parquet"))
             if not older:
                 fail(f"DB is locked (a fetch/backfill is running?) and no "
-                     f"cached {interval} signals exist yet")
+                     f"cached {interval} signals exist for schema "
+                     f"v{SIGNALS_SCHEMA_VERSION}")
             key = max(older, key=os.path.getmtime)
             print(f"WARNING: DB busy - using STALE signal cache "
                   f"{os.path.basename(key)}; rerun after the fetch for "
@@ -95,9 +110,10 @@ def load_universe(interval: str, cutoff) -> dict:
         if not parts:
             fail(f"no usable {interval} data in {DB_PATH}")
         os.makedirs(CACHE_DIR, exist_ok=True)
-        for old in glob.glob(os.path.join(CACHE_DIR,
-                                          f"signals_{interval}_*.parquet")):
-            os.remove(old)
+        for old in glob.glob(os.path.join(          # incl. older schemas
+                CACHE_DIR, f"signals_{interval.replace(':', '')}_*.parquet")):
+            if old != key:
+                os.remove(old)
         pd.concat(parts, ignore_index=True).to_parquet(key)
     return _frames_from_parquet(key, cutoff)
 

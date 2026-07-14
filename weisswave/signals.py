@@ -23,6 +23,7 @@ except ImportError:
     _COMBINED_BULL, _COMBINED_BEAR = [], []
 from .weiswave import weis_wave, pressure_tiers
 from .divergence import fractal_divergences
+from .rci import rci
 
 
 def build_signals(df: pd.DataFrame,
@@ -49,8 +50,12 @@ def build_signals(df: pd.DataFrame,
     tiers = pressure_tiers(ww["volumeup"], ww["volumedn"],
                            very_heavy_mult, heavy_mult)
     divs = fractal_divergences(wt["wt1"], df["High"], df["Low"], prefix="wt")
+    # RCI: Paul's ichimoku/regression-channel trend detection. Its multiplier
+    # is timeframe-dependent, inferred from the index so callers need not pass
+    # an interval (see rci.infer_bar_minutes).
+    rc = rci(df)
 
-    out = out.join([wt, ww, tiers, divs])
+    out = out.join([wt, ww, tiers, divs, rc])
 
     # ── WaveTrend zone signals ────────────────────────────────────────────
     out["wt_oversold"] = out["wt2"] <= os_level
