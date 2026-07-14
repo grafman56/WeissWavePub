@@ -161,6 +161,10 @@ def _sweep(args, shard=None):
         "td": listarg(args, "trail-dist", [0.03], float),
         "tgt": listarg(args, "target", [0.0], float),
         "mp": listarg(args, "max-positions", [5], int),
+        # max-hold time exit: OFF by default (0). Exits should come from
+        # stops / targets / trailing / reversal -- never a clock. Sweepable
+        # only so a time exit can be *tested*, not imposed.
+        "hold": listarg(args, "hold", [0], int),
     }
 
     t0 = time.time()
@@ -170,15 +174,16 @@ def _sweep(args, shard=None):
     build_s = time.time() - t0
 
     def sim_metrics(Ax, Vx, ENTx, SIDXx, EXTx, gridx,
-                    sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr,
+                    sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, thr,
                     htf_thr, wvec):
         """Run one config over a (possibly sliced) grid, return its metrics."""
         yrs = max((pd.Timestamp(gridx[-1]) - pd.Timestamp(gridx[0])).days
                   / 365.25, 1e-9)
         tgt_arr = np.full_like(st_tgt, tg) if tg > 0 else st_tgt
+        hold_arr = np.full(st_hold.shape, hd, np.int64)   # 0 = no time exit
         res = portsim.simulate(
             Ax["O"], Ax["H"], Ax["L"], Ax["C"], Vx, ENTx, Ax["SCORE"], SIDXx,
-            EXTx, Ax["ATR"], Ax["SW"], st_stop, st_hold, tgt_arr,
+            EXTx, Ax["ATR"], Ax["SW"], st_stop, hold_arr, tgt_arr,
             stop_mode=STOP_MODES.get(sm, 0), atr_mult=am, swing_buf=sb,
             trail_act=ta, trail_dist=td, cost_side=cost_side, max_pos=mp,
             init_cash=capital, p1=Ax["P1"], p2=Ax["P2"], p3=Ax["P3"],
@@ -210,22 +215,23 @@ def _sweep(args, shard=None):
     combos = list(itertools.product(
         ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
         ax["ftg"], ax["fe"], ax["ta"], ax["td"], ax["tgt"], ax["mp"],
-        thr_list, htf_thr_list, *w_lists))
+        ax["hold"], thr_list, htf_thr_list, *w_lists))
     n_all = len(combos)
     if shard is not None:
         combos = combos[shard[0]::shard[1]]     # this worker's stride
     rows = []
     t1 = time.time()
     for combo in combos:
-        sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr = combo[:13]
-        htf_thr = combo[13]
-        wvec = np.array(combo[14:])            # per-factor weights (order=names)
-        p = (sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr, htf_thr,
+        sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd = combo[:13]
+        thr, htf_thr = combo[13], combo[14]
+        wvec = np.array(combo[15:])            # per-factor weights (order=names)
+        p = (sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, thr, htf_thr,
              wvec)
         row = {
             "stop": sm, "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
             "tmode": tm, "ftgt": ftg, "entry": fe, "trail": f"{ta:.0%}/{td:.0%}"
-            if ta > 0 else "-", "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp}
+            if ta > 0 else "-", "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp,
+            "hold": hd}
         if conf_entry:
             row["thr"] = thr
             for nm, wv in zip(FACTOR_NAMES, wvec):
@@ -255,7 +261,7 @@ def _sweep(args, shard=None):
     df = pd.DataFrame(rows).sort_values(sort_col, ascending=False) \
         .reset_index(drop=True)
     drop_cols = ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
-                 "entry", "trail", "tgt", "mp"]
+                 "entry", "trail", "tgt", "mp", "hold"]
     if conf_entry:
         drop_cols += ["thr"] + [f"w_{n}" for n in FACTOR_NAMES]
     if htf_screen:

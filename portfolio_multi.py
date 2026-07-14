@@ -373,8 +373,10 @@ def main():
     gtarget = float(gtarget) if gtarget not in (None, "none", "") else None
     gstop = arg(args, "stop", None)
     gstop = float(gstop) if gstop not in (None, "none", "") else None
-    ghold = arg(args, "hold", None)
-    ghold = int(ghold) if ghold not in (None, "none", "") else None
+    # max-hold time exit: OFF by default (0), overriding any hold baked into
+    # the strategy file. Exits should be stops / targets / trailing / reversal
+    # -- never a clock. Pass --hold=N only to deliberately test a time exit.
+    ghold = int(arg(args, "hold", "0"))
     # stop placement: pct (fixed %), atr (entry - mult*ATR), swing (below the
     # recent swing low - buffer, i.e. under support), fib (below the fib
     # retracement of the last up-leg). atr/swing/fib avoid the noise-tagging

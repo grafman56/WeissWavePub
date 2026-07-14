@@ -5,6 +5,14 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Killed the time-clock exit (default hold=0).** The strategy file baked
+  `hold=78` (78 15m bars = exactly 3 trading days), and it was force-closing
+  ~81% of trades on a clock — overriding the stop/target/trailing/reversal
+  exits the framework exists to test, and violating the design rule "exits
+  never on a time clock". Now the max-hold is OFF by default and overridden
+  regardless of the strategy file; `--hold=N` opts a time exit back in *only*
+  to test one, and it's a sweep axis. Direct effect: on 12mo SPX, hold=0
+  beat hold=78 by ~17 pts CAGR — the clock was guillotining winners.
 - **Programmatic sweep API + result store** (toward agent-scale search): the
   sweep is now a callable `run_sweep(spec_dict) -> DataFrame` (spec keys are
   the CLI flags), sharing the exact tested parser with the CLI. Every run's
