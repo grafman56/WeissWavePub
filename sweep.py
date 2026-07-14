@@ -18,6 +18,11 @@ Sweep axes accept comma lists; the cartesian product is run:
         (weekly SETUP screen: eligible only if the weighted htf_* score clears
         the threshold -- higher-TF screens which stocks, entry times the rest)
 
+Every result is scored against BUY-AND-HOLD of the names it traded (hold% =
+equal-weight hold over the window); exc% = active CAGR - hold CAGR, and the
+board is ranked by excess -- a config only "works" if it beats just holding
+the same setups (walk-forward ranks by mean per-fold excess).
+
 Out-of-sample: --oos-split=0.7 tunes/ranks configs on the earlier 70% (TRAIN)
 and scores each on the held-out later 30% (TEST) it never saw -- so a config
 whose te_CAGR holds near its tr_CAGR is robust; one that craters overfit.
@@ -195,7 +200,17 @@ def _sweep(args, shard=None):
             conf_threshold=thr, conf_size=conf_size, htf_start=HTF_START,
             htf_screen=htf_screen, htf_threshold=htf_thr)
         eq = pd.Series(res["equity"]); r = res["ret"]; n = len(r)
-        return {"CAGR": round(((eq.iloc[-1] / capital) ** (1 / yrs) - 1) * 100, 1),
+        cagr = round(((eq.iloc[-1] / capital) ** (1 / yrs) - 1) * 100, 1)
+        # buy & hold benchmark: equal-weight hold of the names THIS config
+        # traded, over the same slice. hold each from its first valid bar to
+        # the last -> the "just buy the setups and hold them" alternative.
+        rr = []
+        for sy in np.unique(res["sym"]) if n else ():
+            vc = Ax["C"][:, sy][Vx[:, sy]]
+            if len(vc) >= 2 and vc[0] > 0:
+                rr.append(vc[-1] / vc[0])
+        hold = round((float(np.mean(rr)) ** (1 / yrs) - 1) * 100, 1) if rr else 0.0
+        return {"CAGR": cagr, "hold": hold, "exc": round(cagr - hold, 1),
                 "DD": round((eq / eq.cummax() - 1).min() * 100, 1),
                 "inv": round(res["invested"].mean() * 100, 0),
                 "n": n, "win": round((r > 0).mean() * 100, 1) if n else 0,
@@ -239,25 +254,30 @@ def _sweep(args, shard=None):
         if htf_screen:
             row["htf_thr"] = htf_thr
         if wf:
-            cagrs = [sim_metrics(*fold, *p)["CAGR"] for fold in folds]
-            row.update({"folds%": " ".join(f"{c:g}" for c in cagrs),
-                        "wf_mean": round(sum(cagrs) / len(cagrs), 1),
-                        "wf_min": round(min(cagrs), 1),
-                        "wf_pos": f"{sum(c > 0 for c in cagrs)}/{wf_folds}"})
+            # rank by EXCESS over buy-&-hold, per fold (not raw return)
+            ms = [sim_metrics(*fold, *p) for fold in folds]
+            exc = [m["exc"] for m in ms]
+            row.update({"foldsExc%": " ".join(f"{c:g}" for c in exc),
+                        "wf_exc": round(sum(exc) / len(exc), 1),
+                        "wf_min": round(min(exc), 1),
+                        "wf_pos": f"{sum(c > 0 for c in exc)}/{wf_folds}",
+                        "wf_CAGR": round(sum(m["CAGR"] for m in ms) / len(ms), 1),
+                        "wf_hold": round(sum(m["hold"] for m in ms) / len(ms), 1)})
         elif oos:
             mtr = sim_metrics(*tr, *p)
             mte = sim_metrics(*te, *p)
-            row.update({"tr_CAGR": mtr["CAGR"], "tr_DD": mtr["DD"],
-                        "te_CAGR": mte["CAGR"], "te_DD": mte["DD"],
-                        "te_n": mte["n"], "te_win": mte["win"]})
+            row.update({"tr_exc": mtr["exc"], "te_CAGR": mte["CAGR"],
+                        "te_hold": mte["hold"], "te_exc": mte["exc"],
+                        "te_DD": mte["DD"], "te_n": mte["n"]})
         else:
             m = sim_metrics(*full, *p)
-            row.update({"CAGR%": m["CAGR"], "maxDD%": m["DD"], "inv%": m["inv"],
-                        "n": m["n"], "win%": m["win"], "avg%": m["avg"]})
+            row.update({"CAGR%": m["CAGR"], "hold%": m["hold"], "exc%": m["exc"],
+                        "maxDD%": m["DD"], "inv%": m["inv"], "n": m["n"],
+                        "win%": m["win"], "avg%": m["avg"]})
         rows.append(row)
     sweep_s = time.time() - t1
 
-    sort_col = "wf_mean" if wf else "tr_CAGR" if oos else "CAGR%"
+    sort_col = "wf_exc" if wf else "te_exc" if oos else "exc%"
     df = pd.DataFrame(rows).sort_values(sort_col, ascending=False) \
         .reset_index(drop=True)
     drop_cols = ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
@@ -291,13 +311,16 @@ def _display(df, meta):
           f"{meta['interval']}, gate={meta['gate']}, market={meta['market']}"
           + (f", last {meta['months']}mo" if meta["months"] else ""))
     if meta["wf"]:
-        print(f"walk-forward {meta['wf_folds']} folds (folds% = CAGR per fold, "
-              f"ranked by mean); fold starts: "
+        print(f"walk-forward {meta['wf_folds']} folds (foldsExc% = EXCESS over "
+              f"buy&hold per fold; ranked by mean excess); fold starts: "
               f"{' | '.join(meta['fold_starts'])} | {meta['end']}")
     elif meta["oos"]:
         print(f"OOS split {meta['oos_split']:.0%}: train {meta['start']} -> "
-              f"test {meta['oos_test_start']} -> {meta['end']}   (ranked by "
-              f"TRAIN, judged on TEST)")
+              f"test {meta['oos_test_start']} -> {meta['end']}   (ranked by TEST "
+              f"excess over buy&hold; exc = active - hold)")
+    else:
+        print("ranked by exc% = active CAGR - buy&hold CAGR (of the traded "
+              "names over the window)")
     print(f"grid {'loaded from cache' if meta['cached'] else 'built'} in "
           f"{meta['build_s']:.1f}s; swept {meta['n_combos']} configs "
           f"({meta['n_sims']} sims) in {meta['sweep_s']:.1f}s "
