@@ -378,7 +378,52 @@ python orchestrate.py --universe=crypto --seeds=1,2,3,4
 python orchestrate.py --via-agents --seeds=1,2   # local LLM agents run them
 ```
 
-### Nothing is hard-coded
+### Setups are data, not code
+
+Adding a factor used to mean editing `build_grid` and bumping a schema version —
+so only a programmer could add a setup, and every factor that existed was one
+someone chose to write. Factors are now JSON:
+
+```json
+"factors": {
+  "sell_exhaustion": {"op": "falling",    "src": "volumedn", "bars": 5},
+  "holds_200ema":    {"op": "dist_above", "src": "Close", "ref": "ema200", "scale": 0.02},
+  "buy_surge":       {"op": "cross_up",   "a": "volumeup", "b": "volumedn", "within": 3},
+  "stalling":        {"op": "stall",      "src": "Close", "bars": 5, "sign": -1}
+}
+```
+
+Each compiles to a signed ~[-1,1] plane, joins the factor stack, and gets a
+weight — so it's searchable the moment it exists. **A setup is then a weight
+vector, not code**: "catching the knife" is nonzero weights on
+`sell_exhaustion` + `holds_200ema` + `buy_surge`; a reversal at a fib level is
+`fib_prox` + `wt_bear_div` + `stalling`; a coil is `hh_hl` + `absorption`.
+
+**Ops:** `falling` · `rising` · `cross_up` · `cross_down` · `dist_above` ·
+`prox` · `stall` · `hh_hl` · `fails_to_break` · `column`. `src`/`ref` are signal
+columns (`Close`, `volumeup`, `volumedn`, `ema200`, `wt1`, `rci_l`, `fib_p2`, …)
+or a plain number.
+
+**Sign is explicit.** Weights are sampled non-negative, so the definition must
+say what the factor *means* — falling sell-volume is bullish, falling price is
+not, and the op can't know which you meant. `"sign": -1` flips it. (Allowing
+negative weights would let the search discover the sense instead; that's
+available via `space.weights.lo`, at the cost of doubling the space to
+rediscover something you already know.)
+
+**Never `eval`.** Every op is a fixed function with whitelisted parameters, and
+`validate_spec()` turns a bad definition into a readable message rather than a
+traceback. A strategy file is untrusted input the moment anyone but its author
+can supply one; "just let them write an expression" turns a JSON upload into
+remote code execution.
+
+Factors are read from `search_space.json` at import (`FACTOR_NAMES` is built
+from it), so `--space=FILE` swaps the other knobs but not the factor list — edit
+that file to change what exists. The grid cache keys on the factor spec, so a
+changed definition rebuilds instead of silently reusing a stack whose columns
+mean something else.
+
+### Nothing else is hard-coded either
 
 Every bound, default, mutation rate and sim literal lives in
 `search_space.json`. If the search can't sample it, it can't find it — **and it

@@ -93,6 +93,11 @@ def build_signals(df: pd.DataFrame,
     # ── Regime filters (gates for entries, not entry triggers themselves) ─
     out["sma50"] = sma(df["Close"], 50)
     out["sma200"] = sma(df["Close"], 200)
+    # EMA references. Paul's charts hang setups off the 200 EMA ("price doesn't
+    # hammer below the 200ema, it holds") -- only SMAs existed, and they are not
+    # the same line. Exposed as columns so factor definitions can reference them.
+    out["ema50"] = ema(df["Close"], 50)
+    out["ema200"] = ema(df["Close"], 200)
     out["minervini"] = out["sma50"] > out["sma200"]     # Stage-2 uptrend
     out["above_50ma"] = df["Close"] > out["sma50"]
     out["in_up_wave"] = out["wave"] == 1

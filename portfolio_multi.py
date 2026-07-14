@@ -27,6 +27,9 @@ from test_strategy import (GATE_DUR, apply_gates, arg, emit, fail,
                            load_universe)
 from weisswave import portsim
 from weisswave.db import DB_PATH
+from search_space import load_space
+from weisswave.factors import (FactorError, compile_factor, custom_names,
+                               validate_spec)
 from weisswave.optimize import benchmark_index
 from weisswave.rci import DISPLACEMENT, LAGGING_SPAN2_PERIODS, rci
 from weisswave.signals import combine_signals, recent
@@ -50,10 +53,24 @@ FIB_ENTRY_MODES = {"off": portsim.FIB_ENTRY_OFF, "zone": portsim.FIB_ENTRY_ZONE,
 # htf_* factors (the tail) are the higher-TF SETUP screen (which stocks are
 # eligible). HTF_START = count of entry factors; the engine sums entry factors
 # for the entry score and htf factors for the screen score, each thresholded.
-FACTOR_NAMES = ["signal", "trend", "fib_prox", "range_pos", "vol_dom", "div",
-                "rci_trend", "rci_heat",
-                "htf_trend", "htf_ema_dist", "htf_fib_prox", "htf_rci_trend"]
-HTF_START = 8            # first index of the higher-TF (weekly) factors
+# BUILTIN factors are structural -- they depend on the strategies file, the
+# gate, or the weekly resample, so they cannot be expressed as a data op.
+# CUSTOM factors come from search_space.json's "factors" block and are compiled
+# by weisswave/factors.py: a setup is then a WEIGHT VECTOR, not code, which is
+# what lets Paul (or an agent, or eventually an end user) add one without
+# touching Python. Custom factors join the ENTRY group; the htf_* screen tail
+# stays last so HTF_START keeps splitting entry-vs-screen correctly.
+BUILTIN_ENTRY = ["signal", "trend", "fib_prox", "range_pos", "vol_dom", "div",
+                 "rci_trend", "rci_heat"]
+BUILTIN_HTF = ["htf_trend", "htf_ema_dist", "htf_fib_prox", "htf_rci_trend"]
+_FACTOR_SPEC = load_space().get("factors", {})
+_errs = validate_spec(_FACTOR_SPEC)
+if _errs:
+    raise FactorError("search_space.json 'factors' is invalid:\n  "
+                      + "\n  ".join(_errs))
+CUSTOM_FACTORS = custom_names(_FACTOR_SPEC)
+FACTOR_NAMES = BUILTIN_ENTRY + CUSTOM_FACTORS + BUILTIN_HTF
+HTF_START = len(BUILTIN_ENTRY) + len(CUSTOM_FACTORS)   # first screen factor
 # `range_pos` was called `dip_bias` and its comment claimed it was the RCI
 # "dangerous range". It is not -- it is price position in a rolling 20-bar
 # high/low range. Paul's real RCI (adaptive regression channel + ichimoku) is
@@ -252,6 +269,11 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         A["FACTORS"][pos, j, 5] = dv
         A["FACTORS"][pos, j, 6] = rci_tr
         A["FACTORS"][pos, j, 7] = rci_ht
+        # CUSTOM factors from search_space.json -- compiled from data, never
+        # eval'd. They sit between the builtins and the htf_* screen tail.
+        for ck, cname in enumerate(CUSTOM_FACTORS, start=len(BUILTIN_ENTRY)):
+            A["FACTORS"][pos, j, ck] = compile_factor(sig, cname,
+                                                      _FACTOR_SPEC[cname])
         # higher-TF (weekly) setup factors, pre-attached to the frame by
         # attach_htf (0 when the symbol has no weekly data)
         for fk, name in enumerate(FACTOR_NAMES[HTF_START:], start=HTF_START):
@@ -433,8 +455,10 @@ GRID_CACHE_DIR = "grid_cache"
 # v10: fib anchor is a DIMENSION (fib_anchor: self/4h/1d/1w) -- P1/P2/P3 can
 #      come from a higher timeframe, so cached grids differ in what the fib
 #      levels MEAN.
+# v11: custom data-defined factors join the stack (FACTOR_NAMES is now
+#      spec-driven), so the factor layout depends on search_space.json.
 # Cached grids from v7/v8 have a different layout and MUST NOT be reused.
-GRID_SCHEMA_VERSION = 10
+GRID_SCHEMA_VERSION = 11
 
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
@@ -454,6 +478,10 @@ def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
         "fib": {**FIB_DEFAULTS, **(fib or {})}, "schema": GRID_SCHEMA_VERSION,
         "universe": universe, "gate_mode": gate_mode,
         "fib_anchor": fib_anchor,
+        # the factor spec defines the LAYOUT of A["FACTORS"] -- a changed
+        # definition must rebuild, never reuse a grid whose columns mean
+        # something else
+        "factors": _FACTOR_SPEC,
     }, sort_keys=True, default=str)
     h = hashlib.sha1(payload.encode()).hexdigest()[:16]
     return os.path.join(GRID_CACHE_DIR,

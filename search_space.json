@@ -27,6 +27,40 @@
     "universe": "crypto"
   },
 
+  "factors": {
+    "_doc": [
+      "FACTORS AS DATA. Each entry compiles to a signed ~[-1,1] plane and joins the factor stack, so it gets a weight and is instantly searchable. A SETUP IS A WEIGHT VECTOR, NOT CODE: 'catching the knife' = nonzero weights on sell_exhaustion + holds_200ema + buy_surge.",
+      "SIGN IS EXPLICIT and it matters: weights are sampled non-negative, so the definition must say what the factor MEANS. Falling sell-volume is bullish; falling price is not -- the op cannot know which you meant. Use \"sign\": -1 to flip.",
+      "ops: falling, rising, cross_up, cross_down, dist_above, prox, stall, hh_hl, fails_to_break, column. See weisswave/factors.py.",
+      "src/ref are signal columns (Close, volumeup, volumedn, ema200, sma50, wt1, rci_l, fib_p2, ...) or a plain number. Never an expression -- a strategy file is untrusted input and must never be eval'd.",
+      "NOTE: these are read from THIS file at import (portfolio_multi builds FACTOR_NAMES from it). --space=FILE swaps the other knobs but not the factor list; edit here to change what exists. The grid cache keys on this spec, so a change rebuilds rather than silently reusing the old layout."
+    ],
+    "sell_exhaustion": {
+      "op": "falling", "src": "volumedn", "bars": 5,
+      "_doc": "Sell pressure fading over the last 5 bars. Bullish, hence sign +1."
+    },
+    "holds_200ema": {
+      "op": "dist_above", "src": "Close", "ref": "ema200", "scale": 0.02,
+      "_doc": "Price's signed distance above the 200 EMA. +1 = 2% above, -1 = 2% below. 'the price doesnt hammer below the 200ema, it holds'."
+    },
+    "buy_surge": {
+      "op": "cross_up", "a": "volumeup", "b": "volumedn", "within": 3,
+      "_doc": "Buying volume took over from selling volume within 3 bars."
+    },
+    "coil": {
+      "op": "hh_hl", "bars": 10,
+      "_doc": "Higher highs AND higher lows -- compression before expansion."
+    },
+    "absorption": {
+      "op": "fails_to_break", "src": "Low", "ref": "ema200", "bars": 3,
+      "_doc": "Sellers pierced the 200 EMA but the close is back above it: the push failed."
+    },
+    "stalling": {
+      "op": "stall", "src": "Close", "bars": 5, "scale": 0.02, "sign": -1,
+      "_doc": "Price going nowhere. sign -1 because teetering instead of pushing argues AGAINST a long -- the reversal read at a fib level."
+    }
+  },
+
   "sim": {
     "_doc": "Values passed straight to portsim that were previously literals in agent_search.",
     "conf_entry": 1,

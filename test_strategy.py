@@ -61,7 +61,8 @@ CACHE_DIR = "signals_cache"
 # apply_gates DROPS any symbol whose gate column is absent -- i.e. asking for a
 # brand-new gate would silently empty the universe instead of erroring.
 # v2 = RCI columns added (rci_bull/bear/breakup/breakdn/heat/...).
-SIGNALS_SCHEMA_VERSION = 2
+# v3 = ema50/ema200 columns added (factor definitions reference them).
+SIGNALS_SCHEMA_VERSION = 3
 
 
 def load_universe(interval: str, cutoff) -> dict:
