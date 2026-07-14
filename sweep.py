@@ -14,6 +14,10 @@ Sweep axes accept comma lists; the cartesian product is run:
     --conf-entry  --w-signal=0,1,2  --w-trend=0,1  --w-fib_prox=0,1,2
         --conf-threshold=0.5,1,1.5   (weighted-confluence entry; each factor's
         --w-<name> is a sweep axis, 0 = mute it)
+
+Out-of-sample: --oos-split=0.7 tunes/ranks configs on the earlier 70% (TRAIN)
+and scores each on the held-out later 30% (TEST) it never saw -- so a config
+whose te_CAGR holds near its tr_CAGR is robust; one that craters overfit.
     --trail-dist=0.03,0.06,0.10   --target=0,0.06   --max-positions=3,5
 
 Fixed (rebuild the grid to change): strategies, --gate, --market, --interval,
@@ -75,6 +79,10 @@ def main():
     else:
         w_lists = [[1.0] for _ in FACTOR_NAMES]   # muted: no wasted combos
         thr_list = [1.0]
+    # out-of-sample split: rank configs on the earlier TRAIN slice, then score
+    # each honestly on the later TEST slice it never saw. 0 = off (full period).
+    oos_split = float(arg(args, "oos-split", "0"))
+    oos = oos_split > 0.0
 
     with open(arg(args, "file", BOT_FILE), encoding="utf-8") as f:
         strategies = json.load(f)
@@ -105,8 +113,38 @@ def main():
         prepare_grid_cached(strategies, interval, gate, market, months,
                             atr_len=atr_len, swing_look=swing_look, fib=fib)
     build_s = time.time() - t0
-    years = max((pd.Timestamp(grid[-1]) - pd.Timestamp(grid[0])).days / 365.25,
-                1e-9)
+
+    def sim_metrics(Ax, Vx, ENTx, SIDXx, EXTx, gridx,
+                    sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr, wvec):
+        """Run one config over a (possibly sliced) grid, return its metrics."""
+        yrs = max((pd.Timestamp(gridx[-1]) - pd.Timestamp(gridx[0])).days
+                  / 365.25, 1e-9)
+        tgt_arr = np.full_like(st_tgt, tg) if tg > 0 else st_tgt
+        res = portsim.simulate(
+            Ax["O"], Ax["H"], Ax["L"], Ax["C"], Vx, ENTx, Ax["SCORE"], SIDXx,
+            EXTx, Ax["ATR"], Ax["SW"], st_stop, st_hold, tgt_arr,
+            stop_mode=STOP_MODES.get(sm, 0), atr_mult=am, swing_buf=sb,
+            trail_act=ta, trail_dist=td, cost_side=cost_side, max_pos=mp,
+            init_cash=capital, p1=Ax["P1"], p2=Ax["P2"], p3=Ax["P3"],
+            fib_stop_ratio=fr, fib_buf=fb, trail_mode=TRAIL_MODES.get(tm, 0),
+            fib_ext=fib_ext, use_fib_target=ftg, gate=Ax["GATE"],
+            fib_entry=FIB_ENTRY_MODES.get(fe, 0), fib_zone_lo=fib_zone_lo,
+            fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look,
+            factors=Ax["FACTORS"], weights=wvec, conf_entry=conf_entry,
+            conf_threshold=thr, conf_size=conf_size)
+        eq = pd.Series(res["equity"]); r = res["ret"]; n = len(r)
+        return {"CAGR": round(((eq.iloc[-1] / capital) ** (1 / yrs) - 1) * 100, 1),
+                "DD": round((eq / eq.cummax() - 1).min() * 100, 1),
+                "inv": round(res["invested"].mean() * 100, 0),
+                "n": n, "win": round((r > 0).mean() * 100, 1) if n else 0,
+                "avg": round(r.mean() * 100, 2) if n else 0}
+
+    full = (A, V, ENT, SIDX, EXT, grid)
+    if oos:
+        sp = int(len(grid) * oos_split)
+        sub = lambda a, x, y: {k: v[x:y] for k, v in a.items()}
+        tr = (sub(A, 0, sp), V[:sp], ENT[:sp], SIDX[:sp], EXT[:sp], grid[:sp])
+        te = (sub(A, sp, None), V[sp:], ENT[sp:], SIDX[sp:], EXT[sp:], grid[sp:])
 
     combos = list(itertools.product(
         ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
@@ -117,22 +155,7 @@ def main():
     for combo in combos:
         sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr = combo[:13]
         wvec = np.array(combo[13:])            # per-factor weights (order=names)
-        tgt_arr = np.full_like(st_tgt, tg) if tg > 0 else st_tgt
-        res = portsim.simulate(
-            A["O"], A["H"], A["L"], A["C"], V, ENT, A["SCORE"], SIDX, EXT,
-            A["ATR"], A["SW"], st_stop, st_hold, tgt_arr,
-            stop_mode=STOP_MODES.get(sm, 0), atr_mult=am, swing_buf=sb,
-            trail_act=ta, trail_dist=td, cost_side=cost_side, max_pos=mp,
-            init_cash=capital, p1=A["P1"], p2=A["P2"], p3=A["P3"],
-            fib_stop_ratio=fr, fib_buf=fb, trail_mode=TRAIL_MODES.get(tm, 0),
-            fib_ext=fib_ext, use_fib_target=ftg, gate=A["GATE"],
-            fib_entry=FIB_ENTRY_MODES.get(fe, 0), fib_zone_lo=fib_zone_lo,
-            fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look,
-            factors=A["FACTORS"], weights=wvec, conf_entry=conf_entry,
-            conf_threshold=thr, conf_size=conf_size)
-        eq = pd.Series(res["equity"])
-        r = res["ret"]
-        n = len(r)
+        p = (sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, thr, wvec)
         row = {
             "stop": sm, "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
             "tmode": tm, "ftgt": ftg, "entry": fe, "trail": f"{ta:.0%}/{td:.0%}"
@@ -141,17 +164,22 @@ def main():
             row["thr"] = thr
             for nm, wv in zip(FACTOR_NAMES, wvec):
                 row[f"w_{nm}"] = wv
-        rows.append({**row,
-            "CAGR%": round(((eq.iloc[-1] / capital) ** (1 / years) - 1) * 100, 1),
-            "maxDD%": round((eq / eq.cummax() - 1).min() * 100, 1),
-            "inv%": round(res["invested"].mean() * 100, 0),
-            "n": n, "win%": round((r > 0).mean() * 100, 1) if n else 0,
-            "avg%": round(r.mean() * 100, 2) if n else 0,
-        })
+        if oos:
+            mtr = sim_metrics(*tr, *p)
+            mte = sim_metrics(*te, *p)
+            row.update({"tr_CAGR": mtr["CAGR"], "tr_DD": mtr["DD"],
+                        "te_CAGR": mte["CAGR"], "te_DD": mte["DD"],
+                        "te_n": mte["n"], "te_win": mte["win"]})
+        else:
+            m = sim_metrics(*full, *p)
+            row.update({"CAGR%": m["CAGR"], "maxDD%": m["DD"], "inv%": m["inv"],
+                        "n": m["n"], "win%": m["win"], "avg%": m["avg"]})
+        rows.append(row)
     sweep_s = time.time() - t1
 
-    df = pd.DataFrame(rows).sort_values("CAGR%", ascending=False)
-    # drop constant columns for readability
+    sort_col = "tr_CAGR" if oos else "CAGR%"
+    df = pd.DataFrame(rows).sort_values(sort_col, ascending=False)
+    # drop constant swept columns for readability
     drop_cols = ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
                  "entry", "trail", "tgt", "mp"]
     if conf_entry:
@@ -159,12 +187,19 @@ def main():
     for c in drop_cols:
         if c in df.columns and df[c].nunique() == 1:
             df = df.drop(columns=c)
-    pd.set_option("display.width", 200)
+    pd.set_option("display.width", 220)
     print(f"grid: {len(syms)} syms x {len(grid)} bars, {interval}, gate={gate}, "
           f"market={market}" + (f", last {months}mo" if months else ""))
+    if oos:
+        print(f"OOS split {oos_split:.0%}: train {pd.Timestamp(grid[0]).date()} "
+              f"-> {pd.Timestamp(grid[sp - 1]).date()}   test "
+              f"{pd.Timestamp(grid[sp]).date()} -> "
+              f"{pd.Timestamp(grid[-1]).date()}   (ranked by TRAIN, judged on "
+              f"TEST)")
+    n_sims = len(combos) * (2 if oos else 1)
     print(f"grid {'loaded from cache' if cached else 'built'} in {build_s:.1f}s; "
-          f"swept {len(combos)} configs in "
-          f"{sweep_s:.1f}s ({sweep_s / len(combos) * 1000:.0f} ms/config "
+          f"swept {len(combos)} configs ({n_sims} sims) in "
+          f"{sweep_s:.1f}s ({sweep_s / n_sims * 1000:.0f} ms/sim "
           f"incl first-call compile)\n")
     print(df.head(top).to_string(index=False))
 

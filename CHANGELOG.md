@@ -3,6 +3,22 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## Unreleased
+
+- **Out-of-sample scoring** (`sweep.py --oos-split=0.7`): ranks configs on the
+  earlier TRAIN slice and scores each on the held-out later TEST slice it never
+  saw, showing `tr_CAGR`/`te_CAGR` side by side — a config whose test holds near
+  its train is robust; one that craters was overfit. The single split can still
+  be regime-biased (walk-forward across many splits is the next step), but it
+  turns "best on this window" into "held up on data it didn't see." Two sims per
+  config, still ~27 ms/sim.
+- **New confluence factors**: `dip_bias` (RCI "dangerous range" — +near range
+  lows, -extended near highs), `vol_dom` (WTV graded volume dominance — the
+  volume confirmation), `div` (WTV bull/bear divergence confluence). All the
+  volume/divergence signals were already computed by the WaveTrend-with-Volume
+  port but unused by the live strategies; these surface them as weighted,
+  sweepable factors. Grid schema -> v6.
+
 ## 0.9.0 — 2026-07-14
 
 Fibonacci structure toolkit + weighted-confluence entry, all sim-time
