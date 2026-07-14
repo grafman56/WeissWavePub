@@ -47,11 +47,13 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
     last_close = np.zeros(S)
     n_open = 0
 
+    p_sidx = np.zeros(S, np.int64)
     cap = T * max_pos + S + 16
     r_sym = np.empty(cap, np.int64)
     r_ret = np.empty(cap)
     r_reason = np.empty(cap, np.int64)
     r_bars = np.empty(cap, np.int64)
+    r_strat = np.empty(cap, np.int64)
     ntr = 0
     equity = np.empty(T)
     invested = np.empty(T)
@@ -93,6 +95,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                 r_ret[ntr] = xpx / p_entry[s] - 1.0
                 r_reason[ntr] = reason
                 r_bars[ntr] = p_held[s]
+                r_strat[ntr] = p_sidx[s]
                 ntr += 1
                 held[s] = False
                 n_open -= 1
@@ -154,6 +157,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                     p_hold[s] = strat_hold[si]
                     p_held[s] = 0
                     p_hwm[s] = base
+                    p_sidx[s] = si
                     n_open += 1
 
         # ---- mark equity ---------------------------------------------------
@@ -165,7 +169,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
         invested[t] = mkt / equity[t] if equity[t] > 0.0 else 0.0
 
     return (r_sym[:ntr], r_ret[:ntr], r_reason[:ntr], r_bars[:ntr],
-            equity, invested)
+            r_strat[:ntr], equity, invested, n_open)
 
 
 def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
@@ -186,6 +190,7 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
                     int(stop_mode), float(atr_mult), float(swing_buf),
                     float(trail_act), float(trail_dist),
                     float(cost_side), int(max_pos), float(init_cash))
-    sym, ret, reason, bars, equity, invested = out
+    sym, ret, reason, bars, strat, equity, invested, n_open = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,
-            "equity": equity, "invested": invested}
+            "strat": strat, "equity": equity, "invested": invested,
+            "open_end": int(n_open)}
