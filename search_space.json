@@ -1,0 +1,107 @@
+{
+  "_README": [
+    "THE SEARCH SPACE, AS DATA. Every bound, default, probability and sim",
+    "literal the search uses lives here -- nothing is hardcoded in the code.",
+    "Agents (and you) edit this file to change what is discoverable.",
+    "Anything absent from a config file falls back to these values.",
+    "Every run records the exact space it used in its results row, so a",
+    "survivor can always be traced back to the bar it had to clear.",
+    "",
+    "RULE OF THUMB: if the search cannot sample it, it cannot find it. A",
+    "weight cap of 3.0 means a setup needing w=5 is invisible AND the search",
+    "will never tell you it was looking through a keyhole. Widen deliberately."
+  ],
+
+  "grid": {
+    "_doc": "How the data grid is built. Changing any of these builds (and caches) a different grid.",
+    "interval": "15m",
+    "_interval_doc": "The LOW timeframe the trades are made on. The cascade's 'dial down' target. Try 5m/15m/1h.",
+    "gate": "minervini@1d",
+    "_gate_doc": "WHICH criteria the daily trend means (e.g. minervini@1d, above_50ma@4h, or 'none'). This selects the definition; gate_mode decides whether it is a law or an opinion.",
+    "gate_mode": "factor",
+    "_gate_mode_doc": "'factor' = the trend is carried ONLY by the weighted `trend` factor, so w_trend decides how much it matters (0 = ignore, large = de facto gate). 'hard' = the old behaviour, the gate ANDs the signal and no weight can escape it. NOTE: 'catching the knife' (timing the reversal of a major downtrend) is ONLY testable in 'factor' mode -- a hard trend gate vetoes every knife entry by definition, since you are buying while the trend is down.",
+    "fib_anchor": "1d",
+    "_fib_anchor_doc": "WHICH timeframe the fib trend anchor (p1/p2/p3 -> retracement levels, the fib stop ladder, fib_prox) is drawn from. 'self' = the trading timeframe (re-anchors every ~35 bars, so its levels are ones Paul would never have drawn); '4h'/'1d'/'1w' = anchor there and forward-fill (shifted to the higher bar's CLOSE, so no lookahead). Default 1d because Paul anchors high and those levels persist -- his BTC 53422->109028 anchor was still working 7 months later. Lower timeframes stay available on purpose: day-trading setups must be testable too. Which anchor wins is a QUESTION FOR THE SEARCH, not an assumption -- run a job per anchor and compare (grid_sig keeps them apart).",
+    "market": "none",
+    "months": 0,
+    "universe": "crypto"
+  },
+
+  "sim": {
+    "_doc": "Values passed straight to portsim that were previously literals in agent_search.",
+    "conf_entry": 1,
+    "htf_screen": 1,
+    "_htf_screen_doc": "The weekly SETUP screen (which names are eligible). 1 = on. The htf_thr threshold is sampled per-config below.",
+    "swing_buf": 0.005,
+    "fib_ext": [1.0, 1.272, 1.618, 2.0],
+    "hold_bars": 0,
+    "_hold_bars_doc": "Time-clock exit in bars. 0 = off. A prior session hardcoded 78 (3 trading days) which silently closed 81% of trades, then hardcoded it to 0. It is a knob, not a constant -- sweep it if you want it.",
+    "cost_bps": 10,
+    "capital": 100000
+  },
+
+  "space": {
+    "_doc": "What rng_cfg samples. Each entry is a distribution the search draws from.",
+    "weights": {"dist": "uniform", "lo": 0.0, "hi": 3.0, "mute_prob": 0.25,
+                "_doc": "Per-factor weight. mute_prob = chance a factor is zeroed outright."},
+    "thr": {"dist": "relative", "lo": -0.10, "hi": 0.80,
+            "_doc": "ENTRY threshold. 'relative' = a FRACTION of the max score the sampled weights can actually produce, so the threshold is always reachable. Use dist='uniform' with lo/hi for the old absolute mode."},
+    "htf": {"dist": "relative", "lo": -0.40, "hi": 0.80,
+            "_doc": "SCREEN threshold, same relative logic. The old absolute uniform(-1.0, 2.5) drew thresholds the weights often could not reach, which is why 27% of the stored configs never traded."},
+    "stop": {"dist": "choice", "values": ["fib", "swing", "atr", "pct"]},
+    "trail": {"dist": "choice", "values": ["pct", "structure", "fib"]},
+    "fr": {"dist": "uniform", "lo": 0.5, "hi": 0.9, "round": 3,
+           "_doc": "fib_stop_ratio"},
+    "ta": {"dist": "choice", "values": [0, 0, 0.04, 0.06],
+           "_doc": "trail activation; repeated values weight the draw"},
+    "td": {"dist": "uniform", "lo": 0.03, "hi": 0.15, "round": 3,
+           "_doc": "trail distance"},
+    "tgt": {"dist": "choice", "values": [0, 0, 0, 0.1, 0.2]},
+    "mp": {"dist": "choice", "values": [3, 5, 8], "_doc": "max concurrent positions"}
+  },
+
+  "mutate": {
+    "_doc": "How the evolutionary step perturbs an elite config.",
+    "weight_prob": 0.25, "weight_sigma": 0.8,
+    "thr_prob": 0.4, "thr_sigma": 0.4,
+    "htf_prob": 0.4, "htf_sigma": 0.4,
+    "stop_prob": 0.2, "trail_prob": 0.2,
+    "td_prob": 0.3, "td_sigma": 0.03, "td_lo": 0.02, "td_hi": 0.2
+  },
+
+  "fitness": {
+    "_doc": "How a config is ranked in TRAINING. Not the honest number -- that is the holdout.",
+    "worst_fold_penalty": 0.5,
+    "_worst_fold_penalty_doc": "fit = mean_excess + penalty*min(0, worst_fold). Punishes blow-up folds so a mostly-winning config beats a lucky-once one.",
+    "min_trades": 1,
+    "_min_trades_doc": "Total trades across all folds below this = UNFIT (dropped, never ranked). A config that never trades is not a strategy: its excess computes as 0.0, which would otherwise outrank every config that traded and lost."
+  },
+
+  "benchmark": {
+    "_doc": "GOAL #2's third leg. Paul's signals must be compared to time-tested mainstream strategies, not only to buy-and-hold. Each one is run through the SAME engine/stops/costs/slots as any config, so the comparison is apples-to-apples rather than a quoted statistic. Computed ONCE per fold (not per config) so the bar never moves under the search's feet.",
+    "mainstream": ["golden_cross", "macd_cross_up", "rsi_oversold_cross", "above_50ma"],
+    "stop_mode": "pct",
+    "stop_pct": 0.08,
+    "max_pos": 5,
+    "_UNAPPROVED_PLACEHOLDER": "THE EXITS BELOW ARE NOT PAUL'S. A hard 8% stop with no trail and no target was invented by an assistant, not chosen by him, and it CONTRADICTS his own rule (max hold 0, let winners run, test trailing-stop variations / sell-X%-at-target). Whatever CAGR the benchmark prints is therefore partly an artifact of an arbitrary exit. Do not present mainstream comparisons as findings until Paul specifies the exits the textbook strategies should get.",
+    "_note": "The textbook strategies run UNGATED, as taught. Dressing them up with our own trend filter would flatter us by making the benchmark ours."
+  },
+
+  "curation": {
+    "_doc": "The bar a config must clear to be called a survivor (orchestrate.py).",
+    "require_beat_mainstream": true,
+    "_require_beat_mainstream_doc": "A survivor must beat buy-and-hold AND the best textbook strategy on the holdout. Set false to fall back to the buy-and-hold-only bar.",
+    "min_pos_frac": 0.66,
+    "_min_pos_frac_doc": "Fraction of training folds that must be positive.",
+    "min_worst_fold": -25.0,
+    "min_holdout_exc": 0.0,
+    "_min_holdout_exc_doc": "Must beat buy-and-hold by more than this on the unseen slice."
+  },
+
+  "validation": {
+    "_doc": "The honesty chain.",
+    "wf_folds": 6,
+    "holdout": 0.2,
+    "_holdout_doc": "Fraction of history reserved, never seen by the search. NOTE: this is a SINGLE FIXED slice. Every config ever scored against it spends a little of its evidential value -- with agents running thousands of configs, whatever 'passes' is increasingly the config that got lucky on this one slice. Rolling/nested holdout is the fix and is not built yet."
+  }
+}

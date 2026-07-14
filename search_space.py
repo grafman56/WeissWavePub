@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""The search space as DATA, not literals.
+
+Every bound, default, probability and sim constant the search uses is loaded
+from search_space.json (or a copy an agent points at with --space=FILE) so that
+what is discoverable is a decision you can read, diff and change -- rather than
+a number a coding session picked and buried in a function call.
+
+Two things worth knowing:
+
+1. If the search cannot sample it, it cannot find it, AND it will not tell you
+   it was looking through a keyhole. Widening a bound is a real decision.
+
+2. Thresholds are sampled RELATIVE by default. Weights and thresholds used to
+   be drawn independently, so a config could draw muted weights (capping the
+   score it could ever produce near zero) and then draw a threshold that score
+   could never reach -- rejecting every bar, forever, and scoring a deceptively
+   neutral-looking 0.0. 27% of the accumulated store is that bug. Sampling a
+   threshold as a fraction of the achievable score makes it reachable by
+   construction.
+
+ASCII only.
+"""
+
+import copy
+import json
+import os
+
+import numpy as np
+
+DEFAULT_SPACE = "search_space.json"
+
+
+def load_space(path=DEFAULT_SPACE, overrides=None):
+    """Load the spec; `overrides` is a dotted-key dict e.g.
+    {"grid.interval": "5m", "space.weights.hi": 6.0} so a CLI flag or an agent
+    can bend one knob without editing the file."""
+    with open(path, encoding="utf-8") as f:
+        sp = json.load(f)
+    for k, v in (overrides or {}).items():
+        node, *rest = k.split(".")
+        if not rest:                     # a top-level key, e.g. --set=_README=x
+            sp[node] = v
+            continue
+        d = sp.setdefault(node, {})
+        for p in rest[:-1]:
+            d = d.setdefault(p, {})
+        d[rest[-1]] = v
+    return sp
+
+
+def space_sig(sp):
+    """A stable signature of the space, minus the _doc noise. Recorded on every
+    results row so a survivor is always traceable to the bar it cleared."""
+    def strip(o):
+        if isinstance(o, dict):
+            return {k: strip(v) for k, v in o.items()
+                    if not k.startswith("_")}
+        return o
+    return json.dumps(strip(sp), sort_keys=True, default=str)
+
+
+def _draw(r, d, n=None):
+    """One draw from a distribution spec."""
+    dist = d.get("dist", "uniform")
+    if dist == "choice":
+        v = r.choice(d["values"], size=n)
+        return v
+    v = r.uniform(d.get("lo", 0.0), d.get("hi", 1.0), size=n)
+    if "round" in d:
+        v = np.round(v, int(d["round"]))
+    return v
+
+
+def sample_cfg(r, sp, K, htf_start):
+    """Draw one random config from the space. Threshold handling is the part
+    that matters: with dist='relative', thr is drawn as a fraction of the max
+    ENTRY score the drawn weights can produce (sum of entry weights, since
+    factors are normalized to ~[-1,1]), and htf likewise over the SCREEN
+    weights. That keeps every sampled config able to actually trade."""
+    s = sp["space"]
+    wd = s["weights"]
+    w = np.round(r.uniform(wd.get("lo", 0.0), wd.get("hi", 3.0), K), 2)
+    w[r.random(K) < wd.get("mute_prob", 0.25)] = 0.0
+
+    def thresh(key, wsum):
+        d = s[key]
+        if d.get("dist") == "relative":
+            frac = r.uniform(d.get("lo", -0.1), d.get("hi", 0.8))
+            return round(float(frac * max(wsum, 1e-9)), 2)
+        return round(float(r.uniform(d.get("lo", 0.0), d.get("hi", 1.0))), 2)
+
+    cfg = {"w": w,
+           "thr": thresh("thr", float(w[:htf_start].sum())),
+           "htf": thresh("htf", float(w[htf_start:].sum())),
+           "stop": str(_draw(r, s["stop"])),
+           "trail": str(_draw(r, s["trail"])),
+           "fr": round(float(_draw(r, s["fr"])), 3),
+           "ta": round(float(_draw(r, s["ta"])), 3),
+           "td": round(float(_draw(r, s["td"])), 3),
+           "tgt": float(_draw(r, s["tgt"])),
+           "mp": int(_draw(r, s["mp"]))}
+    return cfg
+
+
+def mutate_cfg(c, r, sp, K):
+    """Perturb an elite config using the mutation rates from the space."""
+    m = sp["mutate"]
+    s = sp["space"]
+    n = {**c, "w": c["w"].copy()}
+    for i in range(K):
+        if r.random() < m.get("weight_prob", 0.25):
+            n["w"][i] = round(max(0.0, c["w"][i]
+                                  + r.normal(0, m.get("weight_sigma", 0.8))), 2)
+    if r.random() < m.get("thr_prob", 0.4):
+        n["thr"] = round(max(0.0, c["thr"]
+                             + r.normal(0, m.get("thr_sigma", 0.4))), 2)
+    if r.random() < m.get("htf_prob", 0.4):
+        n["htf"] = round(c["htf"] + r.normal(0, m.get("htf_sigma", 0.4)), 2)
+    if r.random() < m.get("stop_prob", 0.2):
+        n["stop"] = str(_draw(r, s["stop"]))
+    if r.random() < m.get("trail_prob", 0.2):
+        n["trail"] = str(_draw(r, s["trail"]))
+    if r.random() < m.get("td_prob", 0.3):
+        n["td"] = round(min(m.get("td_hi", 0.2),
+                            max(m.get("td_lo", 0.02),
+                                c["td"] + r.normal(0, m.get("td_sigma", 0.03)))
+                            ), 3)
+    return n
+
+
+def parse_set_args(args):
+    """--set=grid.interval=5m --set=space.weights.hi=6 -> dotted override dict.
+    Values are JSON-parsed when possible so numbers/bools/lists work."""
+    out = {}
+    for a in args:
+        if not a.startswith("--set="):
+            continue
+        body = a[len("--set="):]
+        if "=" not in body:
+            continue
+        k, v = body.split("=", 1)
+        try:
+            out[k] = json.loads(v)
+        except json.JSONDecodeError:
+            out[k] = v
+    return out
