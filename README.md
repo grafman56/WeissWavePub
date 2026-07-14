@@ -1,8 +1,24 @@
 # WeissWave
 
-Python port of the "WaveTrend with Volume" (WTV) and "Combined v1 Prod"
-TradingView studies, plus a measurement layer for turning their signals
-into testable trading strategies.
+A backtesting framework for multi-timeframe intraday trading strategies —
+grown out of a hand-written VectorBT prototype into a self-contained,
+dependency-light engine. It ports the "WaveTrend with Volume" (WTV) and
+"Combined v1 Prod" TradingView studies into a tested signal library, then
+layers a trustworthy, fast simulation engine for turning those signals into
+validated strategies — from single-signal event studies up to a
+multi-strategy portfolio bot.
+
+The core idea is a top-down cascade: a higher timeframe (daily/4h trend, or
+a market-wide regime filter) decides *which* stocks are worth trading and
+*whether* to trade at all, and the actual entries fire on a lower timeframe
+(15m/5m). "Trade with the trend" is the default rule; exits are driven by
+structure-based stops, trailing stops, and reversal signals — never a fixed
+clock.
+
+Two properties are treated as non-negotiable and enforced by test suites:
+**no lookahead** (nothing may act on information from the future) and a
+**single, tested exit engine** (one numba-compiled simulation loop, so the
+fill/stop/trailing logic can't drift between callers).
 
 ## Layout
 
@@ -18,14 +34,26 @@ weisswave/
                  with the open signal set only.
   signals.py     build_signals(): one ticker OHLCV -> boolean signal table
   optimize.py    two-stage automated strategy search + per-symbol drilldown
-  study.py       event_study() per-signal edge; backtest_long() simulator
+  study.py       event_study() per-signal edge; backtest_long() + _simulate()
+  portsim.py     UNIFIED numba portfolio engine: one @njit loop over a 2D
+                 (time x symbol) grid — single tested source of truth for
+                 exit logic (stop/target/trailing/signal/time)
   fills.py       fine-resolution fill verification against real intraday bars
-  provider.py    data-source abstraction (Yahoo today; Polygon/Alpaca later)
+  provider.py    data-source abstraction (Yahoo + Alpaca deep intraday/crypto)
   db.py          DuckDB storage: upsert_prices/load_prices/coverage_report
 fetch_data.py    incremental S&P 500 fetcher -> market.duckdb
+alpaca_backfill.py  deep intraday backfill (15m/5m since 2018; derive 1h/4h)
 run_study.py     CLI: event study + example strategy (DB or CSV source)
+test_strategy.py one-command backtest harness (any combo/gate/exit/interval)
+portfolio_multi.py  multi-strategy portfolio bot sim (stacked trend gates,
+                 stop modes, trailing/ratchet, market-regime filter)
+sweep.py         fast exit-parameter sweep: build grid once, run many configs
+finder_gated.py  discover low-timeframe setups inside a higher-TF trend
+scan_today.py    nightly setup scanner (post-close, from strategies.json)
 app.py           Streamlit dashboard (fetch, charts, event study, backtests)
 test_weiswave.py invariant tests for the wave engine
+test_engine.py   trust tests for the backtest engine (fills/no-lookahead/...)
+test_portsim.py  trust tests for the unified numba portfolio engine
 ```
 
 ## Dashboard
@@ -100,6 +128,52 @@ python run_study.py --interval=1h    # hourly bars
 python run_study.py --demo           # synthetic smoke test (no data needed)
 ```
 
+## Command-line backtesting
+
+```
+# one strategy, any timeframe, trend-gated, cost-adjusted, train/test split
+python test_strategy.py tdi_long,adp_bull_div --min-count=2 \
+    --interval=15m --gate=minervini@1d,above_50ma@4h --cost-bps=10
+
+# multi-strategy portfolio bot (stacked gates, structure stops, trailing)
+python portfolio_multi.py --interval=15m --gate=minervini@1d,above_50ma@4h \
+    --stop-mode=swing --trail-activate=0.04 --trail-dist=0.03 --engine=numba
+
+# fast sweep: build the grid once, run every exit-parameter combination
+python sweep.py --months=12 --stop-mode=swing,atr \
+    --trail-activate=0,0.04,0.06 --trail-dist=0.03,0.06,0.10
+```
+
+- `--gate=COL@INTERVAL[,COL@INTERVAL...]` stacks trend filters across
+  timeframes (e.g. a daily uptrend AND a 4h uptrend). Entries fire on the
+  low `--interval` only when every gate was true on its last *closed*
+  higher-timeframe bar — no lookahead.
+- `--months=N` restricts trading to the last N months for fast iteration;
+  promote survivors to a full-history run.
+- Exits: fixed-% / ATR / swing-low stops, a profit target, trailing and
+  ratchet ("lock a gain once up X%") stops, a reversal exit signal, or a
+  max-hold — whichever triggers first.
+- Everything is benchmarked against simply *holding the traded names* over
+  the same window, so "active trading beat buy-and-hold" is an honest test.
+
+## Trust: the engine is tested
+
+A backtester that silently gets fills or timing wrong is worse than none —
+it hands you false confidence. Two suites pin down the simulation core with
+hand-built scenarios whose correct answers are known by construction:
+
+- `test_engine.py` — `study._simulate` / `backtest_long`: next-open
+  execution, stop/target fills (including gap-through), stop-before-target
+  priority, signal/time exits, **no lookahead**, no overlapping positions.
+- `test_portsim.py` — the unified numba engine: those properties plus
+  trailing ratchets, position-slot caps, score-ranked selection, and
+  accounting (equity = cash + positions; no money created or destroyed).
+
+The numba engine (`portsim.py`) reproduces the original Python simulator
+byte-for-byte on real data, then runs fast enough to sweep thousands of
+configurations: build the signal grid once, fire each exit-parameter
+combination through the compiled loop in milliseconds.
+
 ## Storage & dedup design
 
 `market.duckdb` has one table, `prices`, with PRIMARY KEY
@@ -136,6 +210,16 @@ failed run never destroys existing data (nothing is ever cleared).
    `backtest_long()` (next-open fills, stop-loss, max-hold).
 4. **Validate** — split data in time (train/test), and beware pooled
    results driven by a handful of tickers or one market regime.
+5. **Cascade** — the higher timeframe selects the tradable universe: a
+   per-stock trend gate (which stocks are in an uptrend) stacked with a
+   market-regime filter (whether to trade at all), so lower-timeframe
+   entries only fire with the trend. The gate is fully swappable — any
+   signal column on any timeframe.
+6. **Portfolio** — `portfolio_multi.py` runs one or many strategies on a
+   shared pool of capital with a position cap, ranking candidates when
+   setups compete, each position managed by its own structure stop /
+   target / trailing rule. This is the step that separates a per-trade
+   edge from what an account actually earns.
 
 ## Porting notes
 

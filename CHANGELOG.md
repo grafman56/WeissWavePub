@@ -3,6 +3,25 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## 0.8.0 — 2026-07-14
+
+- **Unified numba backtest engine** (`weisswave/portsim.py`): one
+  numba-compiled loop over a 2D (time x symbol) grid — a single tested
+  source of truth for exit logic (stop / target / trailing / ratchet /
+  reversal-signal / time), replacing duplicate hand-rolled loops.
+  Reproduces the original Python simulator byte-for-byte on real data.
+- **Trust suites** (`test_engine.py`, `test_portsim.py`): verify fills,
+  no-lookahead, exit priority, trailing, slot caps, score ranking, and
+  accounting on hand-built scenarios with known answers.
+- **Sweep-mode** (`sweep.py`): build the signal grid once, then run every
+  exit-parameter combination through the compiled engine at ~60 ms/config.
+- **Multi-strategy portfolio bot** (`portfolio_multi.py`): stacked
+  cross-timeframe trend gates, market-regime filter, ATR/swing-low stops,
+  trailing/ratchet exits, position caps, benchmarked against holding the
+  traded names.
+- **Deep intraday data** via Alpaca (`alpaca_backfill.py`): 15m/5m back to
+  2018 with real volume; 1h/4h derived session-aligned from 15m.
+
 ## 0.7.1 — 2026-07-13
 
 - **Stacked multi-timeframe trend gates.** `--gate` now accepts several
