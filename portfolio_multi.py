@@ -281,7 +281,9 @@ def main():
                     else np.ones(len(sig), bool))
             sig["xtf_gate"] = base & m
 
-    engine = arg(args, "engine", "loop")
+    # numba is the default engine; --engine=loop keeps the original Python
+    # loop reachable as a reference implementation to cross-check against.
+    engine = arg(args, "engine", "numba")
     if engine == "numba":
         import time as _time
         _t = _time.time()

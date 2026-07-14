@@ -3,6 +3,21 @@
 All notable changes to WeissWave. Each release maps to git commits on
 `main`; run `git log --oneline` for the full trail.
 
+## Unreleased
+
+- **Grid disk cache** (`sweep.py` / `portfolio_multi.prepare_grid_cached`):
+  the sweep's slow step — building the 2D signal grid — is now memoized to
+  `grid_cache/` keyed on strategies, gates, market, interval, window, params,
+  and the DB mtime. First run pays ~40s; every later sweep loads the grid in
+  ~0.3s. The window is normalized to the day and folded into the key, so a
+  cache hit is a byte-identical grid and results never drift. Atomic writes
+  (`tmp` + `os.replace`) prevent half-written caches.
+- **numba is now the default engine** for `portfolio_multi.py`. The original
+  Python loop stays reachable as `--engine=loop`, a reference implementation
+  to cross-check the numba engine against.
+- **Trust suite** (`test_gridcache.py`): grid save/load round-trip fidelity
+  (arrays, dtypes, symbols, timestamps) and cache-key determinism.
+
 ## 0.8.0 — 2026-07-14
 
 - **Unified numba backtest engine** (`weisswave/portsim.py`): one

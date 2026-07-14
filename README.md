@@ -54,6 +54,7 @@ app.py           Streamlit dashboard (fetch, charts, event study, backtests)
 test_weiswave.py invariant tests for the wave engine
 test_engine.py   trust tests for the backtest engine (fills/no-lookahead/...)
 test_portsim.py  trust tests for the unified numba portfolio engine
+test_gridcache.py trust tests for the sweep's grid disk cache
 ```
 
 ## Dashboard
@@ -137,12 +138,19 @@ python test_strategy.py tdi_long,adp_bull_div --min-count=2 \
 
 # multi-strategy portfolio bot (stacked gates, structure stops, trailing)
 python portfolio_multi.py --interval=15m --gate=minervini@1d,above_50ma@4h \
-    --stop-mode=swing --trail-activate=0.04 --trail-dist=0.03 --engine=numba
+    --stop-mode=swing --trail-activate=0.04 --trail-dist=0.03
 
-# fast sweep: build the grid once, run every exit-parameter combination
+# fast sweep: build the grid once (cached to disk), sweep every exit combo
 python sweep.py --months=12 --stop-mode=swing,atr \
     --trail-activate=0,0.04,0.06 --trail-dist=0.03,0.06,0.10
 ```
+
+- The numba engine is the default. `--engine=loop` runs the original Python
+  simulator instead — kept as a reference implementation to cross-check against.
+- The sweep's slow step (building the 2D signal grid) is cached to
+  `grid_cache/` keyed on the strategies, gates, window, params, and the DB's
+  mtime, so the first run pays ~40s and every later sweep loads it in ~0.3s.
+  A cache hit is a byte-identical grid, so results never drift.
 
 - `--gate=COL@INTERVAL[,COL@INTERVAL...]` stacks trend filters across
   timeframes (e.g. a daily uptrend AND a 4h uptrend). Entries fire on the
@@ -168,6 +176,9 @@ hand-built scenarios whose correct answers are known by construction:
 - `test_portsim.py` — the unified numba engine: those properties plus
   trailing ratchets, position-slot caps, score-ranked selection, and
   accounting (equity = cash + positions; no money created or destroyed).
+- `test_gridcache.py` — the sweep's grid disk cache: a save/load round-trip
+  reproduces every array (dtypes, symbols, timestamps) exactly, and the cache
+  key changes iff a build input changes, so a hit can't return a stale grid.
 
 The numba engine (`portsim.py`) reproduces the original Python simulator
 byte-for-byte on real data, then runs fast enough to sweep thousands of
