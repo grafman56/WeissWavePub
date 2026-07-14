@@ -5,6 +5,17 @@ All notable changes to WeissWave. Each release maps to git commits on
 
 ## Unreleased
 
+- **Search orchestrator + OpenCode agents.** `orchestrate.py` runs many
+  `agent_search` jobs across universes/seeds (direct, or `--via-agents` to
+  dispatch each as a task file to the WSL `runner` agent so local qwen agents
+  literally run them), then curates the store down to the only trustworthy
+  candidates: configs that pass BOTH gates -- robust across the training
+  walk-forward folds AND still beat buy-and-hold on the held-out slice. Beating
+  hold on the holdout alone isn't enough (one lucky period). `agents/
+  ww-strategist.md` is an OpenCode agent that reads a store summary and proposes
+  the next jobs. Honest first result: across all accumulated searches, exactly
+  one config passes both gates (+2.3% holdout excess, fib stop + pct trail) --
+  the broad search overfits; the double gate surfaces the rare real survivor.
 - **Crypto universe + agent search.** `binance_fetch.py` backfills crypto from
   Binance's public data archive (no account; the live API is US-geo-blocked but
   the archive CDN is not) into the shared `prices` table; `--universe=crypto`
