@@ -44,9 +44,10 @@ FIB_ENTRY_MODES = {"off": portsim.FIB_ENTRY_OFF, "zone": portsim.FIB_ENTRY_ZONE,
 # (score = sum w_i * factor_i); a --w-<name> knob per factor is auto-exposed,
 # and weights are applied at sim time so they sweep cheaply. Add a factor here
 # + compute it in build_grid and it's instantly weightable/combinable.
-FACTOR_NAMES = ["signal", "trend", "fib_prox"]
+FACTOR_NAMES = ["signal", "trend", "fib_prox", "dip_bias"]
 SIGNAL_NORM = 3.0        # strategy-confluence count that maps to factor 1.0
 FIB_PROX_BAND = 0.05     # within this frac of the leg span from a level -> ~1
+RNG_LOOK = 20            # lookback for the dip_bias "dangerous range" factor
 # only the pivot window is baked into the grid; the fib ratio/buffer/zone are
 # applied at sim time so they stay cheaply sweepable. Default 10 = only
 # "significant" swings become pivots (matches TradingView Auto Fib depth);
@@ -148,9 +149,18 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
             d = np.abs(cl - lvl) / np.where(okleg, legv, np.nan)
             prox = np.maximum(prox, np.where(
                 okleg, np.maximum(0.0, 1.0 - d / FIB_PROX_BAND), 0.0))
+        # dip_bias: where price sits in its recent range -> the RCI "dangerous
+        # range" read. +1 near the range lows (a dip, good for a long), -1 near
+        # the highs (extended -- don't buy the top). A tunable soft filter.
+        hh = pd.Series(hi).rolling(RNG_LOOK, min_periods=1).max().to_numpy()
+        ll = pd.Series(lo).rolling(RNG_LOOK, min_periods=1).min().to_numpy()
+        rng = hh - ll
+        rng_pos = np.where(rng > 0, (cl - ll) / rng, 0.5)
+        dip_bias = np.clip(1.0 - 2.0 * rng_pos, -1.0, 1.0)
         A["FACTORS"][pos, j, 0] = f_signal
         A["FACTORS"][pos, j, 1] = f_trend
         A["FACTORS"][pos, j, 2] = prox
+        A["FACTORS"][pos, j, 3] = dip_bias
     return A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt
 
 
@@ -199,7 +209,7 @@ def prepare_grid(strategies, interval="15m",
 GRID_CACHE_DIR = "grid_cache"
 # bump when the set of arrays build_grid stores changes, so old-schema cache
 # files (which would be missing a newly-added array) can't be loaded.
-GRID_SCHEMA_VERSION = 4
+GRID_SCHEMA_VERSION = 5
 
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,

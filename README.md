@@ -205,7 +205,10 @@ python sweep.py --months=12 --stop-mode=fib --conf-entry \
 
 Current factors: `signal` (strategy-confluence count), `trend` (higher-TF
 uptrend, a signed soft-veto), `fib_prox` (closeness to a fib retracement
-level). Adding a factor is one array in `build_grid` + its name in
+level), `dip_bias` (where price sits in its recent range: +1 near the lows,
+-1 extended near the highs — the "don't buy the top" / dangerous-range read,
+adapted from the RCI trend indicator). Adding a factor is one array in
+`build_grid` + its name in
 `FACTOR_NAMES` — it's then instantly weightable and sweepable. `--conf-size`
 scales position size by the score (stronger confluence = bigger position).
 
