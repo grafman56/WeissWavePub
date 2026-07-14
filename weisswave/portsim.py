@@ -26,17 +26,24 @@ STOP, TRAIL, TARGET, SIGNAL, TIME, EOD = 1, 2, 3, 4, 5, 6
 PCT, ATR, SWING, FIB = 0, 1, 2, 3
 # trailing modes (how the stop ratchets once in profit)
 TRAIL_PCT, TRAIL_STRUCT = 0, 1
+# fib entry modes (extra entry filter/trigger off the fib retracement zone)
+#   OFF          - strategy signals only (fib unused for entry)
+#   ZONE         - signal AND price currently in the [lo, hi] retr. band
+#   BOUNCE       - signal AND a confirmed bounce off that band
+#   BOUNCE_TREND - the bounce IS the entry, gated only by the trend (no signal)
+FIB_ENTRY_OFF, FIB_ENTRY_ZONE, FIB_ENTRY_BOUNCE, FIB_ENTRY_BOUNCE_TREND = \
+    0, 1, 2, 3
 
 
 @njit(cache=True)
 def _simulate(open2d, high2d, low2d, close2d, valid,
               ent, score, sidx, ext,
-              atr, swing, fib_hi, fib_lo,
+              atr, swing, fib_hi, fib_lo, gate,
               strat_stop, strat_hold, strat_target,
               stop_mode, atr_mult, swing_buf,
               fib_stop_ratio, fib_buf,
               trail_act, trail_dist, trail_mode, use_fib_target,
-              fib_zone_gate, fib_zone_lo, fib_zone_hi,
+              fib_entry, fib_zone_lo, fib_zone_hi, fib_bounce_look,
               cost_side, max_pos, init_cash):
     T, S = open2d.shape
     cash = init_cash
@@ -118,16 +125,23 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
 
         # ---- entries: rank candidates by score, fill free slots -----------
         if n_open < max_pos and t > 0:
+            # base entry signal: the strategy signal, except BOUNCE_TREND
+            # mode where the trend gate alone qualifies (the fib bounce below
+            # is then the actual trigger).
+            trend_only = fib_entry == FIB_ENTRY_BOUNCE_TREND
             ncand = 0
             for s in range(S):
-                if valid[t, s] and (not held[s]) and ent[t - 1, s]:
+                base_ok = gate[t - 1, s] > 0.5 if trend_only else ent[t - 1, s]
+                if valid[t, s] and (not held[s]) and base_ok:
                     ncand += 1
             if ncand > 0:
                 cs = np.empty(ncand, np.int64)
                 sc = np.empty(ncand)
                 k = 0
                 for s in range(S):
-                    if valid[t, s] and (not held[s]) and ent[t - 1, s]:
+                    base_ok = (gate[t - 1, s] > 0.5 if trend_only
+                               else ent[t - 1, s])
+                    if valid[t, s] and (not held[s]) and base_ok:
                         cs[k] = s
                         sc[k] = score[t - 1, s]
                         k += 1
@@ -141,11 +155,10 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                     if n_open >= max_pos:
                         break
                     s = cs[order[oi]]
-                    # fib zone gate: only enter if price has pulled back into
-                    # the [lo, hi] retracement band of the current up-leg L->H
-                    # (buying the 0.5-0.786 zone, like the charts). Uses the
-                    # confirmed prior close, so no lookahead.
-                    if fib_zone_gate:
+                    # fib entry filter on the [lo, hi] retracement band of the
+                    # current up-leg L->H. All refs are bars <= t-1 (the entry
+                    # fills at open[t]), so no lookahead.
+                    if fib_entry != FIB_ENTRY_OFF:
                         H = fib_hi[t - 1, s]
                         L = fib_lo[t - 1, s]
                         if not (H > L):
@@ -153,9 +166,27 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                         span = H - L
                         z_hi = H - fib_zone_lo * span   # shallow retr (higher px)
                         z_lo = H - fib_zone_hi * span   # deep retr (lower px)
-                        pxref = close2d[t - 1, s]
-                        if pxref < z_lo or pxref > z_hi:
-                            continue                 # not in the pullback zone
+                        if fib_entry == FIB_ENTRY_ZONE:
+                            # price is simply sitting in the band
+                            pxref = close2d[t - 1, s]
+                            if pxref < z_lo or pxref > z_hi:
+                                continue
+                        else:
+                            # BOUNCE / BOUNCE_TREND: the pullback low reached
+                            # the band and the deep bound held intrabar, and
+                            # the confirmation bar closed UP (the level held
+                            # and price is turning) -- not a knife mid-fall.
+                            mlow = np.inf
+                            u0 = t - fib_bounce_look
+                            if u0 < 0:
+                                u0 = 0
+                            for u in range(u0, t):
+                                if valid[u, s] and low2d[u, s] < mlow:
+                                    mlow = low2d[u, s]
+                            if mlow < z_lo or mlow > z_hi:
+                                continue             # didn't tag the band / broke it
+                            if close2d[t - 1, s] <= open2d[t - 1, s]:
+                                continue             # no up-close confirmation
                     base = open2d[t, s]
                     px = base * (1.0 + cost_side)
                     if px <= 0.0 or not np.isfinite(px):
@@ -226,29 +257,33 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
              cost_side=0.0, max_pos=5, init_cash=100000.0,
              fib_hi=None, fib_lo=None, fib_stop_ratio=0.786, fib_buf=0.005,
              trail_mode=TRAIL_PCT, use_fib_target=0,
-             fib_zone_gate=0, fib_zone_lo=0.5, fib_zone_hi=0.786):
+             gate=None, fib_entry=FIB_ENTRY_OFF, fib_zone_lo=0.5,
+             fib_zone_hi=0.786, fib_bounce_look=3):
     """Python wrapper: ensures dtypes/contiguity, runs the njit core.
     Returns dict with sym, ret, reason, bars (per-trade) and equity/invested
     (per-bar). All 2D inputs are (T, S) float64/bool; strat_* are 1D per
     strategy; sidx/ent/score/ext/atr/swing are (T, S). fib_hi/fib_lo are the
     (T, S) confirmed swing-high / swing-low ladders; the engine forms the fib
     stop (H - ratio*(H-L), buffered), target (H) and structure trail (under L)
-    from them at sim time (default zeros = FIB unused)."""
+    from them at sim time (default zeros = FIB unused). gate is the (T, S)
+    trend-gate mask (1/0) the BOUNCE_TREND entry mode fires inside."""
     f = lambda a: np.ascontiguousarray(a, np.float64)
     b = lambda a: np.ascontiguousarray(a, np.bool_)
     i = lambda a: np.ascontiguousarray(a, np.int64)
     z = np.zeros_like(f(open2d))
     fhi = z if fib_hi is None else f(fib_hi)
     flo = z if fib_lo is None else f(fib_lo)
+    gt = z if gate is None else f(gate)
     out = _simulate(f(open2d), f(high2d), f(low2d), f(close2d), b(valid),
                     b(ent), f(score), i(sidx), b(ext), f(atr), f(swing),
-                    fhi, flo,
+                    fhi, flo, gt,
                     f(strat_stop), i(strat_hold), f(strat_target),
                     int(stop_mode), float(atr_mult), float(swing_buf),
                     float(fib_stop_ratio), float(fib_buf),
                     float(trail_act), float(trail_dist),
                     int(trail_mode), int(use_fib_target),
-                    int(fib_zone_gate), float(fib_zone_lo), float(fib_zone_hi),
+                    int(fib_entry), float(fib_zone_lo), float(fib_zone_hi),
+                    int(fib_bounce_look),
                     float(cost_side), int(max_pos), float(init_cash))
     sym, ret, reason, bars, strat, equity, invested, n_open = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,

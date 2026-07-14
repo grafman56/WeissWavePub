@@ -9,7 +9,8 @@ import sys
 import numpy as np
 
 from weisswave.portsim import (simulate, STOP, TARGET, TIME, TRAIL, FIB,
-                               TRAIL_STRUCT)
+                               TRAIL_STRUCT, FIB_ENTRY_ZONE, FIB_ENTRY_BOUNCE,
+                               FIB_ENTRY_BOUNCE_TREND)
 
 FAILS = []
 
@@ -165,7 +166,7 @@ check("structure trail exits under the swing low, locking a gain",
       and r["reason"][0] == TRAIL, f"ret={r['ret']} reason={r['reason']}")
 
 
-# 12. fib zone gate: enter only when prior close is in the retracement band --
+# 12. fib ZONE entry: enter only when prior close is in the retracement band -
 # H=20, L=10; zone 0.5-0.786 -> price band [20-0.786*10, 20-0.5*10] = [12.14, 15]
 def zbars(pxref):
     return grid([[(pxref, pxref, pxref, pxref)], [(13, 13, 13, 13)],
@@ -174,20 +175,55 @@ zent = [[True], [False], [False]]
 zh = np.full((3, 1), 20.0); zl = np.full((3, 1), 10.0)
 
 
-def entered(pxref, gate=1, hi=zh, lo=zl):
+def entered(pxref, mode=FIB_ENTRY_ZONE, hi=zh, lo=zl):
     o, h, l, c = zbars(pxref)
-    return len(run(o, h, l, c, zent, hold=1, fib_zone_gate=gate,
+    return len(run(o, h, l, c, zent, hold=1, fib_entry=mode,
                    fib_hi=hi, fib_lo=lo)["ret"])
 
 
-check("zone gate: in-band pullback (13) enters", entered(13.0) == 1)
-check("zone gate: too-shallow pullback (16) is skipped", entered(16.0) == 0)
-check("zone gate: too-deep pullback (11) is skipped", entered(11.0) == 0)
-check("zone gate: no valid up-leg (NaN H/L) is skipped",
+check("zone entry: in-band pullback (13) enters", entered(13.0) == 1)
+check("zone entry: too-shallow pullback (16) is skipped", entered(16.0) == 0)
+check("zone entry: too-deep pullback (11) is skipped", entered(11.0) == 0)
+check("zone entry: no valid up-leg (NaN H/L) is skipped",
       entered(13.0, hi=np.full((3, 1), np.nan),
               lo=np.full((3, 1), np.nan)) == 0)
-check("zone gate OFF: shallow pullback (16) still enters (gate is the cause)",
-      entered(16.0, gate=0) == 1)
+check("entry OFF: shallow pullback (16) still enters (mode is the cause)",
+      entered(16.0, mode=0) == 1)
+
+# 13. fib BOUNCE entry: pullback tagged the band AND the confirm bar closed up
+# H=20, L=10; band [12.14, 15]. Entry at bar3 (ent[2]); look=3 -> bars 0-2,
+# so bar2 is the confirm bar and bar4 is left for the exit.
+bh = np.full((5, 1), 20.0); bl = np.full((5, 1), 10.0)
+bent = [[False], [False], [True], [False], [False]]
+
+
+def bounce_entered(confirm, ent=bent, mode=FIB_ENTRY_BOUNCE, **kw):
+    # bar1 low 13 tags the band; bar2 (confirm) precedes the bar3 entry
+    o, h, l, c = grid([[(16, 16, 16, 16)], [(15, 15, 13, 13)], confirm,
+                       [(14, 14, 14, 14)], [(14, 14, 14, 14)]])
+    return len(run(o, h, l, c, ent, hold=1, fib_entry=mode,
+                   fib_hi=bh, fib_lo=bl, **kw)["ret"])
+
+
+check("bounce entry: tagged band + up-close confirm bar enters",
+      bounce_entered([(13, 14.5, 12.5, 14)]) == 1)        # green confirm
+check("bounce entry: down-close confirm bar is skipped",
+      bounce_entered([(14, 14.5, 12.5, 13)]) == 0)        # red confirm
+check("bounce entry: pullback never reached the band is skipped",
+      len(run(*grid([[(16, 16, 16, 16)], [(16, 16, 15.6, 16)],
+                     [(16, 17, 15.6, 16.5)], [(16, 16, 16, 16)],
+                     [(16, 16, 16, 16)]]), bent, hold=1,
+              fib_entry=FIB_ENTRY_BOUNCE, fib_hi=bh, fib_lo=bl)["ret"]) == 0)
+
+# 14. BOUNCE_TREND: the bounce is the entry, gated by the TREND not the signal
+ones = np.ones((5, 1))
+noent = [[False], [False], [False], [False], [False]]
+check("bounce-trend: enters with NO strategy signal when trend gate is on",
+      bounce_entered([(13, 14.5, 12.5, 14)], ent=noent,
+                     mode=FIB_ENTRY_BOUNCE_TREND, gate=ones) == 1)
+check("bounce-trend: no entry when the trend gate is off",
+      bounce_entered([(13, 14.5, 12.5, 14)], ent=noent,
+                     mode=FIB_ENTRY_BOUNCE_TREND, gate=np.zeros((5, 1))) == 0)
 
 
 if __name__ == "__main__":
