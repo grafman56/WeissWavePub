@@ -43,6 +43,8 @@ DEFS = {
     "prox": {"op": "prox", "src": "Close", "ref": "ema200", "band": 0.05},
     "stall": {"op": "stall", "src": "Close", "bars": 5, "scale": 0.02},
     "churn": {"op": "churn", "src": "Close", "bars": 20},
+    "spread": {"op": "spread", "a": "Close", "b": "ema200", "scale": 60},
+    "slope": {"op": "slope", "src": "Close", "bars": 1, "scale": 20},
     "hh_hl": {"op": "hh_hl", "bars": 10},
     "fails_to_break": {"op": "fails_to_break", "src": "Low", "ref": "ema200",
                        "bars": 3},
@@ -334,6 +336,80 @@ class TestChurn(unittest.TestCase):
         build = build - np.linspace(0, build[-1] - build[0], n)   # kill the drift
         trend = np.linspace(100, 140, n)
         self.assertGreater(self.churn(build), self.churn(trend) + 0.5)
+
+
+class TestSpreadAndSlope(unittest.TestCase):
+    """The oscillator as a STATE. The one thing these must not do is throw the
+    magnitude away -- that is the whole reason they exist."""
+
+    def f(self, **cols):
+        n = len(next(iter(cols.values())))
+        idx = pd.date_range("2024-01-01", periods=n)
+        return pd.DataFrame({k: np.asarray(v, float) for k, v in cols.items()},
+                            index=idx)
+
+    def test_tail_is_preserved_not_clipped(self):
+        """THE POINT. wt2 = -60 and wt2 = -322 are the same bool today. If this
+        op clipped, they would be the same number too and nothing would change.
+        tanh compresses but stays strictly monotonic."""
+        f = self.f(wt2=[-60.0, -120.0, -322.0])
+        v = compile_factor(f, "x", {"op": "spread", "a": "wt2", "b": 0,
+                                    "scale": 60})
+        self.assertLess(v[1], v[0], "-120 must read deeper than -60")
+        self.assertLess(v[2], v[1], "-322 must read deeper than -120 -- if this "
+                                    "fails the op is clipping and is pointless")
+        self.assertTrue(np.all(v > -1.0000001) and np.all(v < 1.0000001))
+
+    def test_scale_maps_to_tanh_one(self):
+        f = self.f(wt2=[60.0, -60.0, 0.0])
+        v = compile_factor(f, "x", {"op": "spread", "a": "wt2", "b": 0,
+                                    "scale": 60})
+        self.assertAlmostEqual(v[0], np.tanh(1.0), places=6)
+        self.assertAlmostEqual(v[1], -np.tanh(1.0), places=6)
+        self.assertAlmostEqual(v[2], 0.0, places=9, msg="at the reference = 0")
+
+    def test_sign_flips_the_axis_honestly(self):
+        """sign=-1 is legitimate for spread (0 = at the reference, a real
+        neutral) where it is NOT for pivot_confirm (0 = no candidate)."""
+        f = self.f(wt2=[-60.0])
+        d = {"op": "spread", "a": "wt2", "b": 0, "scale": 60}
+        plain = compile_factor(f, "x", d)[0]
+        flipped = compile_factor(f, "x", {**d, "sign": -1})[0]
+        self.assertLess(plain, 0, "raw: oversold is negative")
+        self.assertGreater(flipped, 0, "sign=-1: deep oversold reads bullish")
+        self.assertAlmostEqual(flipped, -plain, places=9)
+
+    def test_spread_between_two_columns_is_the_gap(self):
+        f = self.f(wt1=[10.0, -10.0], wt2=[0.0, 0.0])
+        v = compile_factor(f, "x", {"op": "spread", "a": "wt1", "b": "wt2",
+                                    "scale": 20})
+        self.assertGreater(v[0], 0); self.assertLess(v[1], 0)
+
+    def test_scale_is_data_and_moves_the_number(self):
+        f = self.f(wt2=[-60.0])
+        got = [compile_factor(f, "x", {"op": "spread", "a": "wt2", "b": 0,
+                                       "scale": s})[0] for s in (20, 60, 200)]
+        self.assertEqual(len(set(np.round(got, 9))), 3, f"scale is dead: {got}")
+
+    def test_slope_signs_and_bars_are_data(self):
+        rising = self.f(wt1=np.linspace(-50, 50, 30))
+        falling = self.f(wt1=np.linspace(50, -50, 30))
+        d = {"op": "slope", "src": "wt1", "bars": 1, "scale": 20}
+        self.assertGreater(compile_factor(rising, "x", d)[-1], 0)
+        self.assertLess(compile_factor(falling, "x", d)[-1], 0)
+        got = [compile_factor(rising, "x", {**d, "bars": n})[-1]
+               for n in (1, 5, 10)]
+        self.assertEqual(len(set(np.round(got, 9))), 3, f"bars is dead: {got}")
+
+    def test_deep_and_turning_composes(self):
+        """depth x slope = "deep AND turning" -- the falling-knife rule as two
+        weights. A cross at -300 still falling and one at -65 turning up must
+        not look the same."""
+        falling_deep = self.f(wt1=[-200.0, -260.0, -300.0])
+        turning_up = self.f(wt1=[-80.0, -72.0, -65.0])
+        d = {"op": "slope", "src": "wt1", "bars": 1, "scale": 20}
+        self.assertLess(compile_factor(falling_deep, "x", d)[-1], 0)
+        self.assertGreater(compile_factor(turning_up, "x", d)[-1], 0)
 
 
 if __name__ == "__main__":

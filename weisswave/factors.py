@@ -181,6 +181,55 @@ def _op_churn(sig, p):
     return v.where(path > _num(p, "min_path", 0.01), 0.0)
 
 
+def _op_spread(sig, p):
+    """Signed distance between `a` and `b`, squashed onto ~[-1,1] by `scale`.
+    +-scale maps to +-0.76 (tanh(1)). `a` or `b` may be a constant.
+
+    THE OSCILLATOR AS A STATE INSTEAD OF AN EVENT. Paul: "maybe we can use the
+    wavetrend process a different way than just firing them off like indicators,
+    because thats what the indicator part already does." He is right: 14 of the
+    16 wt_* columns are BOOLEAN. Only wt1 and wt2 are continuous and nothing
+    weighs either. Measured over 226,305 bars of 1d, `wt_oversold` (wt2 <= -60)
+    is 15,615 bars whose median wt2 is -68 and whose deepest is -322 -- a 5x
+    range handed to the search as ONE BIT. wt1-wt2 spans +-630 and only its SIGN
+    CHANGE survives, as wt_cross_up; the magnitude is the force behind the cross
+    and is discarded.
+
+    TANH, NOT CLIP. Clipping would map -60 and -322 to the same -1.0, which is
+    the exact information loss this op exists to undo. tanh is monotonic
+    everywhere, so order is preserved out into the tail; it only compresses.
+
+    `sign` IS LEGITIMATE HERE, unlike on pivot_confirm. There 0 means "no
+    candidate" and flipping the sign makes empty bars score highest. Here 0
+    means "a is AT b" -- a real midpoint -- so sign=-1 honestly flips the axis:
+    with src=wt2, b=0, sign=-1, deep oversold becomes +0.76 and overbought
+    -0.76. Whether that is the useful direction is FOR THE SEARCH.
+
+    {"op":"spread","a":"wt2","b":0,"scale":60}      # depth: how stretched
+    {"op":"spread","a":"wt1","b":"wt2","scale":20}  # gap: force behind the cross
+    """
+    a = _series(sig, p["a"], "a")
+    b = _series(sig, p["b"], "b")
+    sc = abs(_num(p, "scale", 60.0))
+    return np.tanh((a - b) / (sc + EPS))
+
+
+def _op_slope(sig, p):
+    """Signed change in `src` over `bars`, squashed onto ~[-1,1] by `scale`.
+    Is the oscillator TURNING? A cross at -300 still falling and a cross at -65
+    turning up are opposite setups wearing the same boolean.
+
+    Composes with `spread`: depth x slope as two weights is "deep AND turning",
+    which is Paul's never-catch-a-falling-knife rule as a dial rather than a law.
+
+    {"op":"slope","src":"wt1","bars":1,"scale":20}
+    """
+    s = _series(sig, p["src"], "src")
+    n = max(1, int(_num(p, "bars", 1)))
+    sc = abs(_num(p, "scale", 20.0))
+    return np.tanh((s - s.shift(n)) / (sc + EPS))
+
+
 def _op_hh_hl(sig, p):
     """Higher highs AND higher lows over `bars` -- the coil before expansion.
     A trailing-window proxy for swing structure (no pivot confirmation lag)."""
@@ -268,6 +317,8 @@ OPS = {
     "prox": _op_prox,
     "stall": _op_stall,
     "churn": _op_churn,
+    "spread": _op_spread,
+    "slope": _op_slope,
     "hh_hl": _op_hh_hl,
     "fails_to_break": _op_fails_to_break,
     "pivot_confirm": _op_pivot_confirm,
@@ -278,6 +329,7 @@ REQUIRED = {
     "cross_up": ("a", "b"), "cross_down": ("a", "b"),
     "dist_above": ("src", "ref"), "prox": ("src", "ref"),
     "stall": ("src",), "churn": ("src",),
+    "spread": ("a", "b"), "slope": ("src",),
     "hh_hl": (), "fails_to_break": ("ref",),
     "pivot_confirm": ("src",),
     "column": ("src",),

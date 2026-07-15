@@ -80,6 +80,28 @@
       "bars": 20,
       "_doc": "PAUL'S 'BUILDS BEFORE MOVES', as a number. 1 - |net move| / total path travelled: 0 = a straight line, 1 = price travelled hard and ended where it started. Distinct from `stalling`, which has NO PATH TERM and therefore scores 'sat still' and 'churned and came back' identically (both 1.0) -- opposite situations, and Paul trades the second. IT IS THE RATIO, NOT THE VOLUME: relative volume on his builds is 44th-57th percentile, i.e. ordinary. The effort/result read is right but the DENOMINATOR collapses; there is no extra effort. Raw wasted travel does not work either -- it scales with the window and ranks his excluded example highest. Only the ratio separates them. *** `bars` IS THE SEARCH AXIS, NOT A SETTING. *** 20 is a STARTING POINT ONLY. Paul's five labelled builds run 8, 15, 44, 64 and 89 bars -- an 11x spread -- and at a fixed 20 they read 85th/64th/93rd percentile, which is noise. At native length they read 98th/94th/87th/86th, and the one he called 'a different type' correctly falls to 54th. Sweep it (--set=factors.build.bars=N; one grid per value). Leaving it at 20 rebuilds RNG_LOOK and throws the finding away. sign is +1 and left FOR THE SEARCH: whether churn is bullish (accumulation before the break) or bearish is the question, not the assumption -- `stalling` ships sign:-1 and has already answered it the other way, from a literal."
     },
+    "wt_depth": {
+      "op": "spread",
+      "a": "wt2",
+      "b": 0,
+      "scale": 60,
+      "sign": -1,
+      "_doc": "HOW STRETCHED the oscillator is, as a number instead of a bit. wt_oversold is `wt2 <= -60`: measured over 226,305 bars of 1d that is 15,615 bars whose MEDIAN wt2 is -68 and whose DEEPEST is -322 -- a 5x range handed to the search as ONE BIT, plus 4.9% of all bars sitting within +-5 of the line and flipping on a coin. This keeps the magnitude. sign=-1 flips the axis so DEEP OVERSOLD reads POSITIVE (bullish): wt2=-60 -> +0.76, wt2=+60 -> -0.76. That is legitimate here because 0 means 'at the midline', a real neutral -- unlike pivot_confirm where 0 means 'no candidate' and sign=-1 would make empty bars score highest. `scale` is Paul's own os/ob level (60), not a new constant. It is DATA: sweep it. tanh not clip, so -60 and -322 stay different numbers."
+    },
+    "wt_gap": {
+      "op": "spread",
+      "a": "wt1",
+      "b": "wt2",
+      "scale": 20,
+      "_doc": "THE FORCE BEHIND THE CROSS. wt1-wt2 is the histogram; it spans +-630 (sd 53) and ONLY ITS SIGN CHANGE is consumed today, as the boolean wt_cross_up. The magnitude -- how hard the cross fired -- is discarded entirely. A cross that barely happened and one that snapped over are the same bool. sign=+1: a positive gap (wt1 above wt2) is the bullish side, which is what wt_cross_up already asserts by existing. Whether it matters is the weight's job. `scale` is DATA."
+    },
+    "wt_slope": {
+      "op": "slope",
+      "src": "wt1",
+      "bars": 1,
+      "scale": 20,
+      "_doc": "IS THE OSCILLATOR TURNING? Not used anywhere today -- d(wt1) is computed by nothing. A cross at -300 still falling and a cross at -65 turning up are opposite setups wearing the same boolean. COMPOSES WITH wt_depth: depth x slope as two weights is 'deep AND turning', which is Paul's never-catch-a-falling-knife rule expressed as a dial rather than a law -- and unlike a hard trend gate it does NOT veto the knife by construction, so it is testable. `bars` and `scale` are DATA; bars=1 is a starting point, not a setting."
+    },
     "_doc_indicators": [
       "INDICATOR COMBINATIONS ARE NOW SEARCHED, not chosen. Each indicator below is its own weighted factor, so WHICH COMBINATION fires is decided by WHICH WEIGHTS ARE NON-ZERO -- w=0 means that indicator is out of the strategy. The search discovers 'tdi_long + adp_bull_div' instead of being handed it in bot_strategies.json, and conf_threshold decides how many must agree.",
       "This is 'weights not gates' taken all the way down. It is also cheap: every factor precomputes into ONE grid and the weights sweep at sim time.",
