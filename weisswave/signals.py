@@ -37,6 +37,7 @@ def build_signals(df: pd.DataFrame,
                   very_heavy_mult: float = 10.0,
                   heavy_mult: float = 4.0,
                   confirm_window: int = 3,
+                  rci_params: dict = None,
                   combined: dict = None) -> pd.DataFrame:
     """Compute WaveTrend + Weis Wave + divergences and derive signals.
 
@@ -55,7 +56,16 @@ def build_signals(df: pd.DataFrame,
     # RCI: Paul's ichimoku/regression-channel trend detection. Its multiplier
     # is timeframe-dependent, inferred from the index so callers need not pass
     # an interval (see rci.infer_bar_minutes).
-    rc = rci(df)
+    #
+    # `rci` carries the study's own knobs, the same way `combined` does below.
+    # This was `rci(df)` with no arguments: rci() has accepted length, length2,
+    # multiplier, heat_level, superheat_level and trend_sensitivity all along,
+    # and NOTHING COULD REACH THEM. Paul's chart header reads
+    # `RCI 10 10 0.01 35 25 0.975` -- every one of those is an input he adjusts
+    # while reading, and every one was frozen while testing. The plumbing
+    # existed one layer down and was not connected, which is this repo's
+    # signature bug shape.
+    rc = rci(df, **(rci_params or {}))
 
     out = out.join([wt, ww, tiers, divs, rc])
 

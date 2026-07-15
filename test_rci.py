@@ -115,5 +115,99 @@ class TestRCI(unittest.TestCase):
             self.assertIn(col, out.columns)
 
 
+class TestEveryKnobIsReachable(unittest.TestCase):
+    """Paul's chart header reads `RCI 10 10 0.01 35 25 0.975`. Every one of
+    those is an input he adjusts while reading. They were module literals, and
+    build_signals called `rci(df)` with NO arguments -- rci() had accepted most
+    of them all along and nothing could reach them. Tunable where he reads,
+    frozen where we test.
+
+    These pin that each knob is READ. A parameter that does not move the number
+    is this repo's signature bug: --symbols was dead for every symbol, --exit
+    was dead once, --gate-mode was never read by two of three tools. Every one
+    printed a perfectly reasonable header describing what it was not doing.
+    """
+
+    def frame(self, n=400, seed=3):
+        rng = np.random.default_rng(seed)
+        close = 100 + np.cumsum(rng.normal(0, 1.5, n))
+        high = close + np.abs(rng.normal(0, 1, n))
+        low = close - np.abs(rng.normal(0, 1, n))
+        op = close + rng.normal(0, 0.5, n)
+        return pd.DataFrame(
+            {"Open": op, "High": high, "Low": low, "Close": close,
+             "Volume": rng.uniform(1e5, 1e6, n)},
+            index=pd.date_range("2024-01-01", periods=n, freq="D"))
+
+    def setUp(self):
+        self.df = self.frame()
+        self.base = rci(self.df)
+
+    def assertMoved(self, col, **kw):
+        got = rci(self.df, **kw)
+        same = got[col].fillna(0).equals(self.base[col].fillna(0))
+        k = next(iter(kw))
+        self.assertFalse(same, f"{k}={kw[k]} did not move {col}: the knob is "
+                               f"accepted and not read")
+
+    def test_trend_sensitivity_is_read(self):
+        self.assertMoved("rci_bull", trend_sensitivity=0.90)
+
+    def test_channel_lengths_are_read(self):
+        self.assertMoved("rci_h", length=20)
+        self.assertMoved("rci_h", length2=20)
+
+    def test_multiplier_is_read_and_bypasses_the_tf_ladder(self):
+        """rci.py:46 says the ladder above 30m is EXTRAPOLATED from Paul's curve
+        and 'should be tested, not assumed'. `multiplier` is how it is tested."""
+        self.assertMoved("rci_h", multiplier=0.05)
+
+    def test_heat_levels_are_read(self):
+        """Thresholds come from THIS frame's heat distribution, not from a
+        number I liked. First version used superheat_level=80 and "failed":
+        the synthetic's heat maxes at 18.9, so 35 and 80 both select zero bars
+        and rci_superheated is all-False either way. The knob was fine; the test
+        picked a value the data cannot reach. (Real TSLA 1d moves 642 -> 58.)
+
+        This is also why heat is fed CONTINUOUS to the search via RCI_HEAT_NORM:
+        25/35 are DAILY numbers and would never fire on a 15m frame."""
+        heat = self.base["rci_heat"].dropna()
+        lo, hi = heat.quantile(0.5), heat.quantile(0.9)
+        self.assertGreater(hi, lo, "degenerate heat distribution in the fixture")
+        self.assertMoved("rci_heated", heat_level=float(lo))
+        self.assertMoved("rci_superheated", superheat_level=float(hi))
+
+    def test_ichimoku_periods_are_read(self):
+        """The last four literals. Pine's own defaults, but goal #3 is finding
+        which screen works and a period nobody can vary is a decision nobody can
+        revisit."""
+        self.assertMoved("rci_bull", conversion_periods=5)
+        self.assertMoved("rci_bull", base_periods=40)
+        self.assertMoved("rci_breakup", lagging_span2_periods=26)
+        self.assertMoved("rci_breakup", displacement=10)
+
+    def test_build_signals_threads_them(self):
+        """The actual bug: rci() was parameterised and its ONLY caller passed
+        nothing. The plumbing existed one layer down, unconnected."""
+        from weisswave.signals import build_signals
+        a = build_signals(self.df)
+        b = build_signals(self.df, rci_params={"trend_sensitivity": 0.90})
+        self.assertNotEqual(int(a["rci_bull"].sum()), int(b["rci_bull"].sum()),
+                            "build_signals ignores rci_params")
+
+    def test_displacement_one_does_not_read_the_future(self):
+        """displacement=1 is a legal input and shift(displacement-1) would be
+        shift(0); anything lower must not become a NEGATIVE shift, which reads
+        forward. A knob that can turn into lookahead is worse than a constant."""
+        out = rci(self.df, displacement=1)
+        self.assertEqual(len(out), len(self.df))
+        trunc = rci(self.df.iloc[:-40], displacement=1)
+        n = len(trunc) - 30
+        self.assertTrue(
+            np.allclose(out["rci_h"].to_numpy()[:n],
+                        trunc["rci_h"].to_numpy()[:n], equal_nan=True),
+            "displacement=1 changed past bars when future bars were removed")
+
+
 if __name__ == "__main__":
     unittest.main()

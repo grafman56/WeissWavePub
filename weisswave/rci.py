@@ -155,8 +155,24 @@ def rci(df: pd.DataFrame,
         heat_level: float = HEAT_LEVEL,
         superheat_level: float = SUPERHEAT_LEVEL,
         length: int = CHANNEL_LENGTH,
-        length2: int = CHANNEL_LENGTH2) -> pd.DataFrame:
+        length2: int = CHANNEL_LENGTH2,
+        conversion_periods: int = CONVERSION_PERIODS,
+        base_periods: int = BASE_PERIODS,
+        lagging_span2_periods: int = LAGGING_SPAN2_PERIODS,
+        displacement: int = DISPLACEMENT) -> pd.DataFrame:
     """Port of Paul's RCI study -> columns for the signal layer.
+
+    EVERY INPUT ON PAUL'S CHART IS AN ARGUMENT HERE. His TradingView header
+    reads `RCI 10 10 0.01 35 25 0.975` -- that is length, length2, multiplier,
+    superheat_level, heat_level, trend_sensitivity. Those are things he ADJUSTS
+    on a chart, and for a while they were module literals here: tunable where he
+    reads them, frozen where they get tested. The module constants remain, but
+    only as DEFAULTS.
+
+    The four ichimoku periods (9/26/52/26) are Pine's own defaults and were the
+    last hardcoded ones. They are parameters now for the same reason as the
+    rest: goal #3 is finding which screen actually works, and a period nobody
+    can vary is a decision nobody can revisit.
 
     Returns (all lookahead-free, knowable at each bar's close):
       rci_h/rci_l/rci_mid  : the adaptive regression channel
@@ -171,15 +187,18 @@ def rci(df: pd.DataFrame,
         bar_minutes = infer_bar_minutes(df.index)
     tf = multiplier if multiplier is not None else tf_multiplier(bar_minutes)
 
-    conversion = _donchian(h_, l_, CONVERSION_PERIODS)
-    base = _donchian(h_, l_, BASE_PERIODS)
+    conversion = _donchian(h_, l_, conversion_periods)
+    base = _donchian(h_, l_, base_periods)
     lead1 = (conversion + base) / 2.0
-    lead2 = _donchian(h_, l_, LAGGING_SPAN2_PERIODS)
+    lead2 = _donchian(h_, l_, lagging_span2_periods)
 
     # Pine reads leadLine[displacement-1]: the cloud AS DRAWN AT THIS BAR, i.e.
     # computed 25 bars ago. Past data -- shifting FORWARD would be lookahead.
-    lead1_d = lead1.shift(DISPLACEMENT - 1)
-    lead2_d = lead2.shift(DISPLACEMENT - 1)
+    # max(0, ...) because displacement=1 is a legal input and shift(-0) is fine
+    # while a negative shift would read the FUTURE. The guard is the difference
+    # between a tunable knob and a lookahead bug.
+    lead1_d = lead1.shift(max(0, displacement - 1))
+    lead2_d = lead2.shift(max(0, displacement - 1))
 
     green = c > o
     red = c < o

@@ -186,6 +186,18 @@
     "very_heavy_mult": 10.0,
     "heavy_mult": 4.0,
     "confirm_window": 3,
+    "rci_params": {
+      "_doc": "PAUL'S RCI STUDY'S OWN KNOBS. His TradingView header reads `RCI 10 10 0.01 35 25 0.975` = length, length2, multiplier, superheat_level, heat_level, trend_sensitivity. Every one of those is an input he ADJUSTS while reading a chart. They were module literals in rci.py and build_signals called `rci(df)` with NO ARGUMENTS -- rci() had accepted most of them all along and nothing could reach them. Tunable where he reads, frozen where we test. The rci.py constants remain as DEFAULTS; these override them. VERIFIED LIVE on TSLA 1d, every knob moves its own number: trend_sensitivity 0.975->0.90 rci_bull 1532->265; length2 10->20 rci_h 437->445; multiplier 0.01->0.05 rci_h 437->452; conversion_periods 9->5 rci_bull 1532->1701; base_periods 26->40 -> 1835; displacement 26->10 breakup 55->67; heat_level 25->10 rci_heated 1071->2680; superheat_level 35->80 -> 58. NOTE rci.py:46 admits the TF multiplier ladder above 30m is EXTRAPOLATED from Paul's curve and says those values are 'the kind of thing that should be tested, not assumed'. `multiplier` here is how you test them -- pass it and the ladder is bypassed.",
+      "trend_sensitivity": 0.975,
+      "heat_level": 25.0,
+      "superheat_level": 35.0,
+      "length": 10,
+      "length2": 10,
+      "conversion_periods": 9,
+      "base_periods": 26,
+      "lagging_span2_periods": 52,
+      "displacement": 26
+    },
     "combined": {
       "tdi": {
         "rsi_len": 21,
