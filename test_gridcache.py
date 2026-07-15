@@ -186,6 +186,52 @@ check("grid cache key actually carries the code signature",
       '"code"' in inspect.getsource(pm._grid_cache_path))
 
 
+# 4. signals-cache pruning ----------------------------------------------------
+# This decides which 360MB files get DELETED. It used to remove every cache but
+# the current key, which was right until sig_params joined the key: then a
+# default run and a --space run were each deleting the other's still-valid
+# cache and paying a full rebuild on every alternation.
+import test_strategy as ts  # noqa: E402
+
+_pruned = []
+
+
+def prune(current, present):
+    """Which of `present` would be deleted after writing `current`."""
+    real_glob = ts.glob.glob
+    ts.glob.glob = lambda _pat: [os.path.join(ts.CACHE_DIR, p) for p in present]
+    try:
+        return sorted(os.path.basename(p)
+                      for p in ts.stale_cache_paths(
+                          os.path.join(ts.CACHE_DIR, current), "1d"))
+    finally:
+        ts.glob.glob = real_glob
+
+
+CUR = "signals_1d_1784052866_v3_73a5e0ee_def.parquet"
+SIBLING = "signals_1d_1784052866_v3_73a5e0ee_2af7d248.parquet"   # other params
+OLD_DATA = "signals_1d_1700000000_v3_73a5e0ee_def.parquet"       # older mtime
+OLD_SCHEMA = "signals_1d_1784052866_v2_73a5e0ee_def.parquet"     # older schema
+OLD_CODE = "signals_1d_1784052866_v3_deadbeef_def.parquet"       # older code
+
+check("a sibling with different sig_params is KEPT",
+      SIBLING not in prune(CUR, [CUR, SIBLING]),
+      detail=str(prune(CUR, [CUR, SIBLING])))
+check("the cache just written is KEPT", CUR not in prune(CUR, [CUR, SIBLING]))
+check("a cache built on older DATA is dropped",
+      OLD_DATA in prune(CUR, [CUR, OLD_DATA]))
+check("a cache built on an older SCHEMA is dropped",
+      OLD_SCHEMA in prune(CUR, [CUR, OLD_SCHEMA]))
+check("a cache built by older CODE is dropped",
+      OLD_CODE in prune(CUR, [CUR, OLD_CODE]))
+check("the pre-sig_params legacy name is dropped",
+      "signals_1d_1784052866_v3.parquet" in
+      prune(CUR, [CUR, "signals_1d_1784052866_v3.parquet"]))
+check("alternating default/--space runs prune NOTHING (the actual bug)",
+      prune(CUR, [CUR, SIBLING]) == [] and prune(SIBLING, [CUR, SIBLING]) == [],
+      detail=f"{prune(CUR, [CUR, SIBLING])} / {prune(SIBLING, [CUR, SIBLING])}")
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL GRID-CACHE TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))

@@ -88,6 +88,24 @@ def sig_params_sig(params):
                                    default=str).encode()).hexdigest()[:8]
 
 
+def stale_cache_paths(key, interval):
+    """Caches to delete after writing `key`: the ones built against older DATA
+    or older CODE. Siblings that differ ONLY by sig_params are kept -- they are
+    every bit as valid as `key`, just for different indicator settings.
+
+    This used to be `if old != key: remove`, correct back when exactly one cache
+    per (interval, db_mtime, schema) could be legal. sig_params joined the key
+    and made several legal at once, so a default run and a --space run each
+    deleted the other's 360MB and paid a full ~4min rebuild on every
+    alternation. _grid_cache_path's prune already had this right; this is the
+    same prefix trick, which is the point -- one rule, not two.
+    """
+    keep = os.path.basename(key).rsplit("_", 1)[0]   # drop the sig_params token
+    return [p for p in glob.glob(os.path.join(
+                CACHE_DIR, f"signals_{interval.replace(':', '')}_*.parquet"))
+            if not os.path.basename(p).startswith(keep)]
+
+
 def load_universe(interval: str, cutoff, sig_params: dict = None) -> dict:
     """Signal frames for the whole universe via a parquet cache keyed on the DB
     file's mtime, the signal schema version AND the build_signals parameters:
@@ -168,10 +186,8 @@ def load_universe(interval: str, cutoff, sig_params: dict = None) -> dict:
                   f"{raised + len(parts)} symbols; first: "
                   f"{type(first_err).__name__}: {first_err}")
         os.makedirs(CACHE_DIR, exist_ok=True)
-        for old in glob.glob(os.path.join(          # incl. older schemas
-                CACHE_DIR, f"signals_{interval.replace(':', '')}_*.parquet")):
-            if old != key:
-                os.remove(old)
+        for old in stale_cache_paths(key, interval):
+            os.remove(old)
         pd.concat(parts, ignore_index=True).to_parquet(key)
     return _frames_from_parquet(key, cutoff)
 
