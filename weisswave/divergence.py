@@ -133,4 +133,29 @@ def fractal_divergences(osc: pd.Series, high: pd.Series, low: pd.Series,
     out[f"{p}hidden_bear_div"] = top & (high.shift(2) < prev_price_top) & (osc.shift(2) > prev_osc_top)
     out[f"{p}bull_div"] = bot & (low.shift(2) < prev_price_bot) & (osc.shift(2) > prev_osc_bot)
     out[f"{p}hidden_bull_div"] = bot & (low.shift(2) > prev_price_bot) & (osc.shift(2) < prev_osc_bot)
-    return out.fillna(False)
+
+    # ── the magnitudes the four lines above throw away ────────────────────────
+    # Pine: `regular_bearish_div1 = fractal_top1 and high[2] > high_price1 and
+    #        wt1[2] < high_prev1`. BOTH comparisons are `>` / `<`. The DISTANCES
+    # are right there in the expression and collapse to one bit: a divergence
+    # where price ticked a cent higher while the oscillator fell 40 points, and
+    # one where both moved a hair, are the same boolean.
+    #
+    # Emitted RELATIVE to each series' own scale so they are comparable: price
+    # as a fraction, oscillator in its own units. Signed so + always argues the
+    # divergence's own direction, and NaN off the fractal bars -- these are only
+    # defined AT a pivot pair. That is the point: Paul's two-line drawing is the
+    # slope disagreement, but measured at the PIVOTS. A rolling slope difference
+    # throws the pivot structure away and is true 57% of the time, i.e. noise.
+    #
+    # Columns, not factors. The factor layer decides what to do with them.
+    px_gap_top = (high.shift(2) - prev_price_top) / (prev_price_top.abs() + 1e-12)
+    px_gap_bot = (prev_price_bot - low.shift(2)) / (prev_price_bot.abs() + 1e-12)
+    out[f"{p}bear_div_px"] = px_gap_top.where(out[f"{p}bear_div"])
+    out[f"{p}bear_div_osc"] = (prev_osc_top - osc.shift(2)).where(out[f"{p}bear_div"])
+    out[f"{p}bull_div_px"] = px_gap_bot.where(out[f"{p}bull_div"])
+    out[f"{p}bull_div_osc"] = (osc.shift(2) - prev_osc_bot).where(out[f"{p}bull_div"])
+
+    bools = [c for c in out.columns if out[c].dtype == bool or c.endswith("_div")]
+    out[bools] = out[bools].fillna(False)
+    return out
