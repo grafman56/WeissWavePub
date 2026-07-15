@@ -373,24 +373,50 @@ def main():
 
     cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
               if months else None)
+    # This harness does not expose the indicator params yet; both paths below
+    # must therefore build with the SAME (default) settings. Naming it once and
+    # passing it to both is what keeps them from drifting -- and line 385 used
+    # to reference this without it existing anywhere, which is the bug below.
+    sig_params = None
+
     if sym_arg:
         # explicit symbol list: small, build directly (no cache round-trip)
         con = connect(read_only=True)
         frames = {}
+        skipped = []
+        first_err = None
         for s in [x.strip().upper() for x in sym_arg.split(",")]:
             df = load_prices(con, s, interval)
             if len(df) < 300:
+                skipped.append(f"{s}: only {len(df)} {interval} bars (<300)")
                 continue
             try:
                 sig = build_signals(df, **(sig_params or {}))
-            except Exception:
+            except Exception as e:                       # noqa: BLE001
+                # This swallowed a NameError -- `sig_params` was referenced here
+                # and defined nowhere, so --symbols raised on EVERY symbol, for
+                # every interval, and reported "no usable data". The flag was
+                # dead from the commit that introduced sig_params and nothing
+                # said so: a bad request and a broken code path looked
+                # identical. You ASKED for these symbols by name; if we cannot
+                # build them, say why.
+                if first_err is None:
+                    first_err = e
+                skipped.append(f"{s}: {type(e).__name__}: {e}")
                 continue
             if cutoff is not None:
                 sig = sig[sig.index >= cutoff]
                 if len(sig) < 20:
+                    skipped.append(f"{s}: only {len(sig)} bars after the "
+                                   f"--months cutoff (<20)")
                     continue
             frames[s] = sig
         con.close()
+        if not frames:
+            fail(f"none of the requested symbols produced usable {interval} "
+                 f"data:\n  " + "\n  ".join(skipped))
+        if skipped:
+            print("WARNING: skipped " + "; ".join(skipped))
     else:
         frames = load_universe(interval, cutoff)
     if not frames:
