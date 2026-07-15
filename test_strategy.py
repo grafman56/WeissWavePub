@@ -124,6 +124,31 @@ def parse_gates(gate_arg):
     return gates
 
 
+def code_stale_cache_paths():
+    """EVERY signals cache no current code can produce, across ALL intervals.
+
+    stale_cache_paths below only globs the interval it is writing, so an
+    interval you do not happen to run keeps its dead cache forever. That is not
+    hypothetical: the 2026-07-15 signals.py/divergence.py changes moved the code
+    signature 61ac34d4 -> f91ee71f, the 1d and 4h caches rebuilt and pruned
+    themselves on the next run, and 3.87GB of 15m sat there untouched because
+    nothing ran 15m that day. It would have self-healed the next time someone
+    did -- which is exactly how "the cache is just cold" hides a leak.
+
+    The code signature is GLOBAL, so this rule is exact rather than a heuristic:
+    a cache whose codesig token is not the current one cannot be reached by this
+    code from any interval. Legacy names predating the token (signals_1h_<mtime>
+    .parquet) are unreachable for the same reason and go too.
+
+    NOT a data-staleness prune: db_mtime siblings are left to stale_cache_paths,
+    which owns the per-interval rules (and the sig_params siblings it must KEEP).
+    One concern each.
+    """
+    live = f"_v{SIGNALS_SCHEMA_VERSION}_{SIGNAL_CODE_SIG}_"
+    return [p for p in glob.glob(os.path.join(CACHE_DIR, "signals_*.parquet"))
+            if live not in os.path.basename(p)]
+
+
 def stale_cache_paths(key, interval):
     """Caches to delete after writing `key`: the ones built against older DATA
     or older CODE. Siblings that differ ONLY by sig_params are kept -- they are
@@ -222,8 +247,17 @@ def load_universe(interval: str, cutoff, sig_params: dict = None) -> dict:
                   f"{raised + len(parts)} symbols; first: "
                   f"{type(first_err).__name__}: {first_err}")
         os.makedirs(CACHE_DIR, exist_ok=True)
+        # this interval's data/schema-stale caches (keeps sig_params siblings)...
         for old in stale_cache_paths(key, interval):
             os.remove(old)
+        # ...and every OTHER interval's code-stale ones. Without this, a cache
+        # for an interval you stop running is never revisited and never pruned:
+        # 3.87GB of 15m survived a codesig change on 2026-07-15 purely because
+        # nothing ran 15m that day. Cheap (one glob) and exact (the codesig is
+        # global), so any run reclaims what any other run orphaned.
+        for old in code_stale_cache_paths():
+            if os.path.abspath(old) != os.path.abspath(key):
+                os.remove(old)
         pd.concat(parts, ignore_index=True).to_parquet(key)
     return _frames_from_parquet(key, cutoff)
 

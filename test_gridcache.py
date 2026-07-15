@@ -291,6 +291,41 @@ check("alternating default/--space runs prune NOTHING (the actual bug)",
       prune(CUR, [CUR, SIBLING]) == [] and prune(SIBLING, [CUR, SIBLING]) == [],
       detail=f"{prune(CUR, [CUR, SIBLING])} / {prune(SIBLING, [CUR, SIBLING])}")
 
+# ...and the cross-interval sweep. stale_cache_paths only globs the interval it
+# is writing, so an interval you stop running keeps its dead cache forever:
+# 3.87GB of 15m survived the 2026-07-15 codesig change (61ac34d4 -> f91ee71f)
+# because nothing ran 15m that day. It would have self-healed on the next 15m
+# run, which is precisely how "the cache is just cold" hides a leak.
+def code_prune(present):
+    real_glob = ts.glob.glob
+    ts.glob.glob = lambda _pat: [os.path.join(ts.CACHE_DIR, p) for p in present]
+    try:
+        return sorted(os.path.basename(p) for p in ts.code_stale_cache_paths())
+    finally:
+        ts.glob.glob = real_glob
+
+
+_LIVE_1D = f"signals_1d_1784052866_v{ts.SIGNALS_SCHEMA_VERSION}_{ts.SIGNAL_CODE_SIG}_def.parquet"
+_LIVE_SIB = f"signals_1d_1784052866_v{ts.SIGNALS_SCHEMA_VERSION}_{ts.SIGNAL_CODE_SIG}_2af7d248.parquet"
+_LIVE_OLDDATA = f"signals_1d_1700000000_v{ts.SIGNALS_SCHEMA_VERSION}_{ts.SIGNAL_CODE_SIG}_def.parquet"
+_DEAD_15M = f"signals_15m_1784052866_v{ts.SIGNALS_SCHEMA_VERSION}_61ac34d4_def.parquet"
+_DEAD_LEGACY = "signals_5m_1783978591.parquet"
+
+_all = [_LIVE_1D, _LIVE_SIB, _LIVE_OLDDATA, _DEAD_15M, _DEAD_LEGACY]
+_got = code_prune(_all)
+check("code-stale cache in ANOTHER interval is dropped (the 3.87GB leak)",
+      _DEAD_15M in _got, detail=str(_got))
+check("the pre-codesig legacy name is dropped from any interval",
+      _DEAD_LEGACY in _got, detail=str(_got))
+check("a LIVE cache is never touched, in any interval",
+      _LIVE_1D not in _got and _LIVE_SIB not in _got, detail=str(_got))
+check("a sig_params SIBLING survives the cross-interval sweep",
+      _LIVE_SIB not in _got,
+      detail="this sweep must not re-break the 360MB alternation bug")
+check("older DATA on LIVE code is NOT this sweep's job (one concern each)",
+      _LIVE_OLDDATA not in _got,
+      detail="db_mtime staleness belongs to stale_cache_paths")
+
 
 # 5. NO CLOCK BY DEFAULT ------------------------------------------------------
 # "NEVER SELL FOR NO REASON JUST BECAUSE DAYS WENT BY THAT'S STUPID" -- Paul,
