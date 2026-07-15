@@ -705,7 +705,16 @@ def main():
     trail_mode = arg(args, "trail-mode", "pct")
     fib_ext = [float(x) for x in arg(args, "fib-ext", "1.0,1.272,1.618,2.0")
                .split(",")]
-    trail_act = arg(args, "trail-activate", None)
+    # Trailing is ON by default: ride to +10%, then trail under the high-water
+    # mark. Paul: "Default should be something like 10% profit with a trailing
+    # stop." An exit strategy is a target / a trail / a bearish reversal -- and
+    # with trailing OFF (the old default) and no --target and no --exit, the
+    # ONLY way out is the stop, so every closed trade is a loss BY
+    # CONSTRUCTION. That is not a strategy, it is a permanent position with a
+    # stop-loss, and it reported win=0.0% on 124/124 trades without anything
+    # being broken.
+    # --trail-activate=none turns it off to deliberately test that.
+    trail_act = arg(args, "trail-activate", "0.10")
     trail_act = float(trail_act) if trail_act not in (None, "none", "") else None
     trail_dist = float(arg(args, "trail-dist", "0.03"))
     exit_arg = arg(args, "exit", None)          # bearish reversal exit signal(s)
