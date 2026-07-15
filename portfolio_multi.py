@@ -752,7 +752,12 @@ def main():
     if gate_mode not in ("hard", "factor"):
         fail(f"--gate-mode must be 'hard' or 'factor', got {gate_mode!r}")
 
-    market = arg(args, "market", "sma100")      # market-regime filter; none to disable
+    # market-regime filter; sma100 etc to enable. Default none to agree with
+    # search_space.json grid.market, sweep.py, and prepare_grid_cached's own
+    # signature -- this CLI was the only one of the five saying sma100, so a
+    # bare run was regime-filtered while the search space it feeds was not.
+    # A hard regime filter also vetoes every knife entry by construction.
+    market = arg(args, "market", "none")
     cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
               if months else None)
     universe_arg = arg(args, "universe", "stocks")

@@ -339,6 +339,57 @@ for tool in ("portfolio_multi.py", "portfolio_sim.py",
     check(f"{tool}: no private silent-drop parse", 'if "@" in g' not in code)
 
 
+# 7. ONE market-regime default ------------------------------------------------
+# Same disease as --hold, one knob over. portfolio_multi's CLI defaulted to
+# sma100 while search_space.json, sweep.py, and prepare_grid_cached's OWN
+# signature all said none -- so a bare portfolio_multi run was regime-filtered
+# (~31% fewer trades, 55 -> 38) while the search space it feeds was not, and the
+# two disagreed about what a "default run" meant. It also vetoes every knife
+# entry by construction: the broad market is always below its MA in a crash,
+# which is exactly when the reversal setup Paul wants to test exists.
+# Five declarations, so five pins. Each is read in the form that tool uses.
+_MKT = {}
+
+m = re.search(r'arg\(args,\s*"market",\s*"(\w+)"\)', _pm)
+_MKT["portfolio_multi.py CLI"] = m.group(1) if m else None
+check("portfolio_multi.py: --market defaults to none",
+      _MKT["portfolio_multi.py CLI"] == "none",
+      detail=f"default is {_MKT['portfolio_multi.py CLI'] or 'NOT FOUND'}")
+
+m = re.search(r'arg\(args,\s*"market",\s*"(\w+)"\)', _sw)
+_MKT["sweep.py CLI"] = m.group(1) if m else None
+check("sweep.py: --market defaults to none",
+      _MKT["sweep.py CLI"] == "none",
+      detail=f"default is {_MKT['sweep.py CLI'] or 'NOT FOUND'}")
+
+_MKT["search_space.json"] = _spec.get("grid", {}).get("market")
+check("search_space.json: grid.market is none",
+      _MKT["search_space.json"] == "none",
+      detail=str(_MKT["search_space.json"]))
+
+# the engine's own signature, not just the CLIs in front of it -- this is the
+# one portfolio_multi's CLI was contradicting inside a single file
+for fn in (pm.prepare_grid, pm.prepare_grid_cached):
+    d = inspect.signature(fn).parameters["market"].default
+    _MKT[f"pm.{fn.__name__}()"] = d
+    check(f"pm.{fn.__name__}(): market= defaults to none", d == "none",
+          detail=repr(d))
+
+check("every tool AGREES on the market default",
+      len(set(_MKT.values())) == 1,
+      detail=" ".join(f"{k}={v!r}" for k, v in _MKT.items()))
+
+# agent_search and orchestrate read G["market"] from the space rather than
+# keeping a literal. That is the shape the others should have; pin that they
+# have not quietly grown a private default that could drift from the space.
+for tool in ("agent_search.py", "orchestrate.py"):
+    src = open(tool, encoding="utf-8").read()
+    check(f"{tool}: reads the market default from the space, not a literal",
+          re.search(r'arg\(args,\s*"market",\s*G\["market"\]\)', src)
+          is not None
+          and re.search(r'arg\(args,\s*"market",\s*"', src) is None)
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL GRID-CACHE TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))
