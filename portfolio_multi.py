@@ -25,7 +25,7 @@ import pandas as pd
 
 from weisswave.codesig import package_sig
 from test_strategy import (GATE_DUR, apply_gates, arg, emit, fail,
-                           load_universe)
+                           load_universe, parse_gates)
 from weisswave import portsim
 from weisswave.db import DB_PATH, connect, list_symbols
 from search_space import load_space
@@ -502,8 +502,7 @@ def prepare_grid(strategies, interval="15m",
     cache uses this so a hit is a byte-identical rebuild). `fib` is the
     build-time pivot config (left/right/stop_ratio/buf) for the FIB stop."""
     fib = {**FIB_DEFAULTS, **(fib or {})}
-    gates = [tuple(g.split("@", 1)) for g in gate_arg.split(",")
-             if "@" in g] if gate_arg != "none" else []
+    gates = parse_gates(gate_arg)
     if cutoff is None and months:
         cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
     frames = select_universe(load_universe(interval, cutoff, sig_params),
@@ -732,8 +731,7 @@ def main():
     if not strategies:
         fail("no strategies selected")
 
-    gates = [tuple(g.split("@", 1)) for g in gate_arg.split(",")
-             if "@" in g] if gate_arg != "none" else []
+    gates = parse_gates(gate_arg)
 
     market = arg(args, "market", "sma100")      # market-regime filter; none to disable
     cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)

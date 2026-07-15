@@ -257,6 +257,63 @@ check("search_space.json: sim.hold_bars is 0",
       detail=str(_spec.get("sim", {}).get("hold_bars")))
 
 
+# 6. ONE gate parser -----------------------------------------------------------
+# Four copies of "COL@IV -> (col, iv)" existed and they DISAGREED. portfolio_multi
+# used `[... for g in gate_arg.split(",") if "@" in g]`, which silently DROPS a
+# malformed entry: `--gate=minervini` (forgetting @1d) ran UNGATED while the
+# header still printed `gate=minervini`. 443 trades -> 537 and a gate that never
+# existed. Reporting a filter you did not apply is the same failure as reporting
+# a trade that never fired.
+_pg = ts.parse_gates
+
+check("none -> no gates", _pg("none") == [] and _pg("") == [])
+check("single gate parses", _pg("minervini@1d") == [("minervini", "1d")])
+check("stacked gates parse",
+      _pg("minervini@1d,above_50ma@4h")
+      == [("minervini", "1d"), ("above_50ma", "4h")])
+
+
+def _rejects(s):
+    try:
+        _pg(s)
+        return False
+    except SystemExit:
+        return True
+
+
+check("a gate with no @interval is REJECTED, not dropped", _rejects("minervini"))
+check("a missing interval is rejected", _rejects("minervini@"))
+check("a missing column is rejected", _rejects("@1d"))
+check("one bad entry rejects the whole list",
+      _rejects("minervini@1d,above_50ma"))
+
+# ...and nobody kept a private copy. Compare CODE, not prose: ast.unparse drops
+# docstrings and comments, so the notes explaining what was removed cannot be
+# mistaken for the thing itself. (My first version of this check flagged
+# parse_gates' own docstring as a private parser.)
+def _code_only(path):
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef,
+                             ast.AsyncFunctionDef)):
+            b = getattr(node, "body", None)
+            if (b and isinstance(b[0], ast.Expr)
+                    and isinstance(b[0].value, ast.Constant)
+                    and isinstance(b[0].value.value, str)):
+                b.pop(0)
+    return ast.unparse(tree)
+
+
+check("test_strategy owns the one parser",
+      "def parse_gates(" in _code_only("test_strategy.py"))
+for tool in ("portfolio_multi.py", "portfolio_sim.py",
+             "finder_gated.py", "finder_5m_gated.py"):
+    code = _code_only(tool)
+    check(f"{tool}: uses parse_gates", "parse_gates(" in code)
+    check(f"{tool}: no hardcoded GATES constant", "GATES = [(" not in code)
+    check(f"{tool}: no private silent-drop parse", 'if "@" in g' not in code)
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL GRID-CACHE TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))

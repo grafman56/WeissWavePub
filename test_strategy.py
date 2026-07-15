@@ -95,6 +95,34 @@ def sig_params_sig(params):
                                    default=str).encode()).hexdigest()[:8]
 
 
+def parse_gates(gate_arg):
+    """"COL@IV,COL@IV" -> [(col, interval), ...], all ANDed. "none" -> [].
+
+    Malformed entries FAIL. They used to be silently dropped by
+    `[... for g in gate_arg.split(",") if "@" in g]` in portfolio_multi, which
+    meant `--gate=minervini` (forgetting @1d) ran UNGATED while the header still
+    printed `gate=minervini`. One missing @1d took a 12-symbol crypto run from
+    443 trades to 537 and claimed a gate that never existed. A backtester that
+    reports a filter it did not apply is the same failure as one that reports a
+    trade that never fired.
+
+    Four copies of this parse existed (two of them identical lines in the same
+    file). This is the one that was right.
+    """
+    if not gate_arg or gate_arg == "none":
+        return []
+    gates = []
+    for g in gate_arg.split(","):
+        if "@" not in g:
+            fail(f"--gate needs COL@INTERVAL[,COL@INTERVAL...], got {g!r}. "
+                 f"e.g. minervini@1d,above_50ma@4h  (or --gate=none)")
+        col, iv = g.split("@", 1)
+        if not col or not iv:
+            fail(f"--gate entry {g!r} is missing a column or an interval")
+        gates.append((col, iv))
+    return gates
+
+
 def stale_cache_paths(key, interval):
     """Caches to delete after writing `key`: the ones built against older DATA
     or older CODE. Siblings that differ ONLY by sig_params are kept -- they are
@@ -357,13 +385,7 @@ def main():
     gate_arg = arg(args, "gate", "minervini@1d")
     target = arg(args, "target", None)
     target = float(target) if target not in (None, "none", "") else None
-    gates = []                      # [(col, interval), ...]; all ANDed
-    if gate_arg and gate_arg != "none":
-        for g in gate_arg.split(","):
-            if "@" not in g:
-                fail("--gate needs COL@INTERVAL[,COL@INTERVAL...], "
-                     "e.g. minervini@1d,above_50ma@4h")
-            gates.append(tuple(g.split("@", 1)))
+    gates = parse_gates(gate_arg)   # [(col, interval), ...]; all ANDed
 
     known = set(SIGNAL_COLUMNS_BULL + SIGNAL_COLUMNS_BEAR + FILTER_COLUMNS)
     for c in entry_cols + exit_cols + ([filter_col] if filter_col else []) \

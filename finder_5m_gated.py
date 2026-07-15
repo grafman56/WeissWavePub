@@ -5,6 +5,14 @@ what actually has edge as a 5m entry on those bars. Signals are pre-gated
 (ANDed with the trend) so every discovered entry is in-trend by construction.
 
     python finder_5m_gated.py            # default 150 symbols
+    python finder_5m_gated.py 60 --gate=rci_bull@1d
+    python finder_5m_gated.py --gate=none
+
+WHICH SCREEN WINS IS A TEST, NOT A CONSTANT. The gates were hardcoded here with
+no override, so trying any other screen meant editing the file. The default
+keeps the old behaviour. See finder_gated.py, which does the same for any
+interval.
+
 ASCII output."""
 
 import sys
@@ -12,13 +20,15 @@ import time
 
 import pandas as pd
 
-from test_strategy import apply_gates, load_universe
+from test_strategy import apply_gates, arg, load_universe, parse_gates
 from weisswave.optimize import find_strategies
 from weisswave.signals import SIGNAL_COLUMNS_BULL
 
 INTERVAL = "5m"
-GATES = [("minervini", "1d"), ("above_50ma", "4h")]
-N_SYMBOLS = int(sys.argv[1]) if len(sys.argv) > 1 else 150
+_args = sys.argv[1:]
+_pos = [a for a in _args if not a.startswith("--")]   # flags are not positional
+GATES = parse_gates(arg(_args, "gate", "minervini@1d,above_50ma@4h"))
+N_SYMBOLS = int(_pos[0]) if _pos else 150
 
 t0 = time.time()
 frames = load_universe(INTERVAL, None)

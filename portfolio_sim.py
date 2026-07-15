@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 from test_strategy import (STRATEGIES_PATH, apply_gates, arg, emit, fail,
-                           load_universe)
+                           load_universe, parse_gates)
 from weisswave.optimize import benchmark_index
 from weisswave.signals import (SIGNAL_COLUMNS_BEAR, SIGNAL_COLUMNS_BULL,
                                FILTER_COLUMNS, combine_signals, recent)
@@ -86,13 +86,7 @@ def main():
     target = float(target) if target not in (None, "none", "") else None
     exit_arg = arg(args, "exit", None)
     exit_cols = [] if exit_arg in (None, "none", "") else exit_arg.split(",")
-    gates = []                      # [(col, interval), ...]; all ANDed
-    if gate_arg and gate_arg != "none":
-        for g in gate_arg.split(","):
-            if "@" not in g:
-                fail("--gate needs COL@INTERVAL[,COL@INTERVAL...], "
-                     "e.g. minervini@1d,above_50ma@4h")
-            gates.append(tuple(g.split("@", 1)))
+    gates = parse_gates(gate_arg)   # [(col, interval), ...]; all ANDed
 
     known = set(SIGNAL_COLUMNS_BULL + SIGNAL_COLUMNS_BEAR + FILTER_COLUMNS)
     for c in entry_cols + exit_cols + ([filter_col] if filter_col else []) \
