@@ -229,7 +229,9 @@
     "hold_bars": 0,
     "_hold_bars_doc": "Time-clock exit in bars. 0 = off. A prior session hardcoded 78 (3 trading days) which silently closed 81% of trades, then hardcoded it to 0. It is a knob, not a constant -- sweep it if you want it.",
     "cost_bps": 10,
-    "capital": 100000
+    "capital": 100000,
+    "reentry_cooldown": 0,
+    "_reentry_cooldown_doc": "Bars after a STOP-OUT before the same symbol may be re-entered. 0 = off. A signal is a STATE, not an event -- combine_signals keeps it live for `window` bars -- so one signal can fund several entries: stop out, the signal is still inside its window, re-enter, stop out again. MEASURED on BTC 15m/24mo (tdi_long, 3% stop): 135 stops in 252 trades, 20 streaks of 3+ consecutive stops, max streak 8; with a 10% stop the worst 10-trade run was -60%. Dangerous in proportion to timeframe: a bad month on the daily is an afternoon at 15m. Only a STOP arms it; a target/trail exit is a winner banked and re-entry after one is a continuation. SWEEP IT, do not pick it."
   },
   "space": {
     "_doc": "What rng_cfg samples. Each entry is a distribution the search draws from.",

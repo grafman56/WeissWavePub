@@ -64,6 +64,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
               fib_entry, fib_zone_lo, fib_zone_hi, fib_bounce_look,
               factors, weights, conf_entry, conf_threshold, conf_size,
               htf_start, htf_screen, htf_threshold, gate_hard,
+              reentry_cd,
               cost_side, max_pos, init_cash):
     T, S = open2d.shape
     cash = init_cash
@@ -73,6 +74,15 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
     p_stop = np.zeros(S)
     p_tp = np.zeros(S)
     p_hold = np.zeros(S, np.int64)
+    # bar of the last STOP-OUT per symbol, for --reentry-cooldown. A signal is
+    # a STATE, not an event: combine_signals keeps it live for `window` bars, so
+    # one signal can fund several entries. Stop out, the signal is still inside
+    # its window, re-enter, stop out again. MEASURED on BTC 15m/24mo (tdi_long,
+    # 3% stop): 135 stops in 252 trades, 20 streaks of 3+ consecutive stops, a
+    # max streak of 8; with a 10% stop the worst 10-trade run was -60%. On a
+    # daily that is a bad month, at 15m it is an afternoon.
+    # -inf so the first entry on every symbol is always allowed.
+    p_last_stop = np.full(S, -(1 << 40), np.int64)
     p_held = np.zeros(S, np.int64)
     p_hwm = np.zeros(S)
     p_p1 = np.zeros(S)          # fib anchors snapshotted at entry, for the
@@ -163,6 +173,13 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                 ntr += 1
                 held[s] = False
                 n_open -= 1
+                # Only a STOP starts the cooldown. A target/trail exit is a
+                # WINNER being banked -- re-entering after one is a
+                # continuation, not a grind. A signal/time exit is neither, so
+                # it does not count either. This is the knob, not a rule:
+                # reentry_cd=0 is the old behaviour.
+                if reason == STOP:
+                    p_last_stop[s] = t
             else:
                 if high2d[t, s] > p_hwm[s]:
                     p_hwm[s] = high2d[t, s]
@@ -179,6 +196,9 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
             ncand = 0
             for s in range(S):
                 if not (valid[t, s] and (not held[s])):
+                    continue
+                # cooling off after a stop-out on THIS symbol
+                if reentry_cd > 0 and t - p_last_stop[s] < reentry_cd:
                     continue
                 if conf_entry:
                     e, h = _conf_scores(factors, weights, t, s, htf_start, K)
@@ -208,6 +228,8 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                 k = 0
                 for s in range(S):
                     if not (valid[t, s] and (not held[s])):
+                        continue
+                    if reentry_cd > 0 and t - p_last_stop[s] < reentry_cd:
                         continue
                     if conf_entry:
                         e, h = _conf_scores(factors, weights, t, s, htf_start, K)
@@ -354,7 +376,7 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
              fib_zone_hi=0.786, fib_bounce_look=3,
              factors=None, weights=None, conf_entry=0, conf_threshold=1.0,
              conf_size=0, htf_start=-1, htf_screen=0, htf_threshold=0.0,
-             gate_hard=0):
+             gate_hard=0, reentry_cd=0):
     """Python wrapper: ensures dtypes/contiguity, runs the njit core.
     Returns dict with sym, ret, reason, bars (per-trade) and equity/invested
     (per-bar). All 2D inputs are (T, S) float64/bool; strat_* are 1D per
@@ -393,7 +415,7 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
                     fac, wts, int(conf_entry), float(conf_threshold),
                     int(conf_size),
                     hstart, int(htf_screen), float(htf_threshold),
-                    int(gate_hard),
+                    int(gate_hard), int(reentry_cd),
                     float(cost_side), int(max_pos), float(init_cash))
     sym, ret, reason, bars, strat, equity, invested, n_open = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,

@@ -653,6 +653,14 @@ def main():
     # the strategy file. Exits should be stops / targets / trailing / reversal
     # -- never a clock. Pass --hold=N only to deliberately test a time exit.
     ghold = int(arg(args, "hold", "0"))
+    # Bars after a STOP-OUT before the same symbol may be re-entered. 0 = off
+    # (the old behaviour). A signal is a STATE (combine_signals keeps it live
+    # for `window` bars), so one signal can fund several entries: stop out, the
+    # signal is still inside its window, re-enter, stop out again. Only a STOP
+    # arms it -- a target/trail exit is a winner being banked, and re-entering
+    # after one is a continuation, not a grind. A knob, not a rule: the search
+    # sizes it.
+    reentry_cd = int(arg(args, "reentry-cooldown", "0"))
     # stop placement: pct (fixed %), atr (entry - mult*ATR), swing (below the
     # recent swing low - buffer, i.e. under support), fib (below the fib
     # retracement of the last up-leg). atr/swing/fib avoid the noise-tagging
@@ -808,7 +816,8 @@ def main():
             # gate silently evaporated under --conf-entry while the header
             # still printed it. Only meaningful when a gate exists AND the user
             # asked for it to be a veto.
-            gate_hard=int(gate_mode == "hard" and bool(gates)))
+            gate_hard=int(gate_mode == "hard" and bool(gates)),
+            reentry_cd=reentry_cd)
         why = {1: "stop", 2: "trail", 3: "target", 4: "signal", 5: "time",
                6: "eod"}
         trades = [{"symbol": syms[res["sym"][i]],

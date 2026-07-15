@@ -219,6 +219,8 @@ def _sweep(args, shard=None):
         # stops / targets / trailing / reversal -- never a clock. Sweepable
         # only so a time exit can be *tested*, not imposed.
         "hold": listarg(args, "hold", [0], int),
+        # bars after a STOP before the same symbol can re-enter; 0 = off
+        "rcd": listarg(args, "reentry-cooldown", [0], int),
     }
 
     # HOW the gate reaches the engine. prepare_grid_cached defaulted this to
@@ -238,8 +240,8 @@ def _sweep(args, shard=None):
     build_s = time.time() - t0
 
     def sim_metrics(Ax, Vx, ENTx, SIDXx, EXTx, gridx,
-                    sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, thr,
-                    htf_thr, wvec):
+                    sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, rcd,
+                    thr, htf_thr, wvec):
         """Run one config over a (possibly sliced) grid, return its metrics."""
         yrs = max((pd.Timestamp(gridx[-1]) - pd.Timestamp(gridx[0])).days
                   / 365.25, 1e-9)
@@ -259,7 +261,8 @@ def _sweep(args, shard=None):
             conf_threshold=thr, conf_size=conf_size, htf_start=HTF_START,
             htf_screen=htf_screen, htf_threshold=htf_thr,
             # conf_entry never reads `ent`, where the hard gate is baked
-            gate_hard=int(gate_mode == "hard" and gates_on))
+            gate_hard=int(gate_mode == "hard" and gates_on),
+            reentry_cd=rcd)
         eq = pd.Series(res["equity"]); r = res["ret"]; n = len(r)
         cagr = round(((eq.iloc[-1] / capital) ** (1 / yrs) - 1) * 100, 1)
         # buy & hold benchmark: equal-weight hold of the names THIS config
@@ -291,24 +294,24 @@ def _sweep(args, shard=None):
     combos = list(itertools.product(
         ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
         ax["ftg"], ax["fe"], ax["ta"], ax["td"], ax["tgt"], ax["mp"],
-        ax["hold"], thr_list, htf_thr_list, *w_lists))
+        ax["hold"], ax["rcd"], thr_list, htf_thr_list, *w_lists))
     n_all = len(combos)
     if shard is not None:
         combos = combos[shard[0]::shard[1]]     # this worker's stride
     rows = []
     t1 = time.time()
     for combo in combos:
-        sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd = combo[:13]
-        thr, htf_thr = combo[13], combo[14]
-        wvec = np.array(combo[15:])            # per-factor weights (order=names)
-        p = (sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, thr, htf_thr,
-             wvec)
+        sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, rcd = combo[:14]
+        thr, htf_thr = combo[14], combo[15]
+        wvec = np.array(combo[16:])            # per-factor weights (order=names)
+        p = (sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, rcd, thr,
+             htf_thr, wvec)
         row = {
             "stop": sm, "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
             "tmode": tm, "ftgt": ftg, "entry": fe,
             "trail": _trail_label(tm, ta, td),
             "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp,
-            "hold": hd}
+            "hold": hd, "rcd": rcd}
         if conf_entry:
             row["thr"] = thr
             for nm, wv in zip(FACTOR_NAMES, wvec):
@@ -343,7 +346,7 @@ def _sweep(args, shard=None):
     df = pd.DataFrame(rows).sort_values(sort_col, ascending=False) \
         .reset_index(drop=True)
     drop_cols = ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
-                 "entry", "trail", "tgt", "mp", "hold"]
+                 "entry", "trail", "tgt", "mp", "hold", "rcd"]
     if conf_entry:
         drop_cols += ["thr"] + [f"w_{n}" for n in FACTOR_NAMES]
     if htf_screen:
