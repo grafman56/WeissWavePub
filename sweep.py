@@ -181,7 +181,15 @@ def _sweep(args, shard=None):
         "tm": listarg(args, "trail-mode", ["pct"], str),
         "ftg": listarg(args, "fib-target", [0], int),      # 0/1 use fib tp
         "fe": listarg(args, "fib-entry", ["off"], str),    # off/zone/bounce/..
-        "ta": listarg(args, "trail-activate", [0.0], float),
+        # Trailing ON by default (ride to +10%, then trail under the high),
+        # matching portfolio_multi. This was 0.0 = OFF, so a sweep that did not
+        # explicitly pass --trail-activate got the DEGENERATE stop-only case:
+        # no target, no trail, no exit signal, no clock means the only way out
+        # is the stop, so every closed trade is a loss BY CONSTRUCTION and every
+        # row reads win=0.0%. Worse, the same config scored differently here
+        # than in portfolio_multi -- the exact split the hold=0 fix was about.
+        # Sweep --trail-activate=0 to test no-trailing deliberately.
+        "ta": listarg(args, "trail-activate", [0.10], float),
         "td": listarg(args, "trail-dist", [0.03], float),
         "tgt": listarg(args, "target", [0.0], float),
         "mp": listarg(args, "max-positions", [5], int),

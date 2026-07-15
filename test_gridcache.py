@@ -251,6 +251,31 @@ for tool in ("test_strategy.py", "portfolio_multi.py", "portfolio_sim.py"):
           m is not None and m.group(1) == "0",
           detail=f"default is {m.group(1) if m else 'NOT FOUND'}")
 
+# sweep uses listarg(), a DIFFERENT form -- the arg() regex above silently
+# matched nothing here, so the tool that runs the most configs was the one this
+# test did not cover. A pin that skips a tool is not a pin.
+_sw = open("sweep.py", encoding="utf-8").read()
+m = re.search(r'listarg\(args,\s*"hold",\s*\[(\d+)\]', _sw)
+check("sweep.py: --hold defaults to 0 (no time clock)",
+      m is not None and m.group(1) == "0",
+      detail=f"default is {m.group(1) if m else 'NOT FOUND'}")
+
+# ...and the same disease one knob over: trailing OFF by default means the only
+# exit is the stop, so win% is 0.0 BY CONSTRUCTION. The tools must agree, or the
+# same config scores differently depending on which one you ran.
+m = re.search(r'listarg\(args,\s*"trail-activate",\s*\[([0-9.]+)\]', _sw)
+check("sweep.py: --trail-activate defaults ON (not the stop-only degenerate)",
+      m is not None and float(m.group(1)) > 0,
+      detail=f"default is {m.group(1) if m else 'NOT FOUND'}")
+_pm = open("portfolio_multi.py", encoding="utf-8").read()
+m2 = re.search(r'arg\(args,\s*"trail-activate",\s*"([0-9.]+)"\)', _pm)
+check("portfolio_multi.py: --trail-activate defaults ON",
+      m2 is not None and float(m2.group(1)) > 0,
+      detail=f"default is {m2.group(1) if m2 else 'NOT FOUND'}")
+check("sweep and portfolio_multi agree on the trailing default",
+      m is not None and m2 is not None and float(m.group(1)) == float(m2.group(1)),
+      detail=f"sweep={m.group(1) if m else '?'} pm={m2.group(1) if m2 else '?'}")
+
 _spec = json.load(open("search_space.json", encoding="utf-8"))
 check("search_space.json: sim.hold_bars is 0",
       _spec.get("sim", {}).get("hold_bars") == 0,
