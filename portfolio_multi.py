@@ -724,12 +724,39 @@ def main():
     fib_zone_hi = float(arg(args, "fib-zone-hi", "0.786"))
     fib_bounce_look = int(arg(args, "fib-bounce-look", "3"))
     # confluence entry: enter when the weighted sum of factors clears a
-    # threshold. --w-<factor> weights each factor (default 1); nothing is a
-    # hard gate -- set a weight to 0 to mute a factor, tune to taste/sweep.
+    # threshold. --w-<factor> weights each factor; nothing is a hard gate.
+    #
+    # EVERY WEIGHT DEFAULTS TO 0, AND THAT IS THE POINT. It used to default to
+    # 1.0, so a bare --conf-entry summed EVERY factor at equal weight and one
+    # you actually set was drowned by the ones you did not. Paul measured it:
+    # w_trend = +1/0/-1 read 75/77/72 -- pure noise -- and only after muting the
+    # rest did the same knob read 59/16/84. A perfect factor looks dead at 22:1,
+    # and you would conclude it does not work.
+    #
+    # A default of 1 also silently asserts that every factor belongs in every
+    # setup, which is a decision, and defaults are exactly where decisions hide.
+    # 0 asserts nothing: name what you want.
+    #
+    # The SEARCH is unaffected -- agent_search:242 passes weights=c["w"] from
+    # its own sampler (uniform 0..3, mute_prob 0.25). This default only ever
+    # governed hand-run CLI configs, which is where Paul's measurement came from.
     conf_entry = 1 if ("--conf-entry" in args or arg(args, "conf-entry", "0")
                        not in ("0", "no", "false", "none", "")) else 0
-    weights = np.array([float(arg(args, f"w-{n}", "1.0"))
+    weights = np.array([float(arg(args, f"w-{n}", "0.0"))
                         for n in FACTOR_NAMES])
+    # NAMED, not NONZERO. `--w-trend=0` is an explicit mute and a legitimate
+    # config -- it is one of the three cells in Paul's own +1/0/-1 sweep. Erroring
+    # on it would reject the control arm of the measurement this default exists
+    # to fix. The error is for naming NOTHING, which is the only case that cannot
+    # mean anything.
+    named = any(a.startswith(f"--w-{n}=") for n in FACTOR_NAMES for a in args)
+    if conf_entry and not named:
+        fail("--conf-entry with no --w-<factor> given: every factor defaults to "
+             "0, so this would score 0 on every bar and take no trades -- a run "
+             "that measured NOTHING, reported exactly like a run that found "
+             "nothing.\n"
+             "Name at least one factor, e.g. --w-trend=1 --w-signal=2.\n"
+             f"Available: {', '.join(FACTOR_NAMES)}")
     conf_threshold = float(arg(args, "conf-threshold", "1.0"))
     conf_size = 1 if ("--conf-size" in args or arg(args, "conf-size", "0")
                       not in ("0", "no", "false", "none", "")) else 0

@@ -449,6 +449,58 @@ for tool in ("agent_search.py", "orchestrate.py"):
           and re.search(r'arg\(args,\s*"market",\s*"', src) is None)
 
 
+# 8. FACTOR WEIGHTS DEFAULT TO 0 ---------------------------------------------
+# They defaulted to 1.0, so a bare --conf-entry summed EVERY factor at equal
+# weight and drowned the one you set. Paul measured it: w_trend = +1/0/-1 read
+# 75/77/72 -- noise -- and the SAME knob read 59/16/84 once the rest were muted.
+# A perfect factor looks dead at 22:1.
+#
+# A default of 1 also silently asserts every factor belongs in every setup. That
+# is a decision, and defaults are where decisions hide. 0 asserts nothing.
+#
+# Both tools are pinned because they must AGREE: the same config scoring
+# differently in sweep than in portfolio_multi is this repo's signature bug, and
+# each reads the flag in its own form (arg vs listarg) -- the --hold pin missed
+# sweep for exactly that reason.
+m = re.search(r'arg\(args,\s*f"w-\{n\}",\s*"([0-9.]+)"\)', _pm)
+check("portfolio_multi.py: --w-<factor> defaults to 0",
+      m is not None and float(m.group(1)) == 0.0,
+      detail=f"default is {m.group(1) if m else 'NOT FOUND'}")
+
+m2 = re.search(r'listarg\(args,\s*f"w-\{n\}",\s*\[([0-9.]+)\]', _sw)
+check("sweep.py: --w-<factor> defaults to 0",
+      m2 is not None and float(m2.group(1)) == 0.0,
+      detail=f"default is {m2.group(1) if m2 else 'NOT FOUND'}")
+
+check("sweep and portfolio_multi AGREE on the weight default",
+      m is not None and m2 is not None
+      and float(m.group(1)) == float(m2.group(1)),
+      detail=f"pm={m.group(1) if m else '?'} sweep={m2.group(1) if m2 else '?'}")
+
+# ...and a --conf-entry naming NO factor must ERROR, not silently take no
+# trades. A run that measured NOTHING must not look like a run that found
+# nothing.
+#
+# The guard must test NAMED, not NONZERO, and this pins the mechanism rather
+# than the message -- a test that greps the prose is a green light with no bulb,
+# and this one caught nothing when the wording changed. The first version of the
+# guard used `weights.any()`, which rejected `--w-trend=0`: an EXPLICIT mute and
+# the control arm of Paul's own +1/0/-1 measurement.
+for tool, src in (("portfolio_multi.py", _pm), ("sweep.py", _sw)):
+    check(f"{tool}: a factorless --conf-entry errors (guards on NAMED)",
+          re.search(r'named\s*=\s*any\(.*startswith\(f"--w-\{n\}="', src)
+          is not None and "not named" in src)
+    check(f"{tool}: the guard does NOT reject an explicit --w-x=0",
+          "weights.any()" not in src and "any(any(v) for v in w_lists)" not in src,
+          detail="guarding on nonzero rejects a deliberate mute")
+
+# the search must NOT depend on the CLI default -- it passes its own sampled
+# weights, which is why changing this cannot disturb a search
+_as = open("agent_search.py", encoding="utf-8").read()
+check("agent_search passes sampled weights, not the CLI default",
+      re.search(r'weights=c\["w"\]', _as) is not None)
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL GRID-CACHE TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))

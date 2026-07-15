@@ -74,11 +74,29 @@
       "sign": -1,
       "_doc": "Price going nowhere. sign -1 because teetering instead of pushing argues AGAINST a long -- the reversal read at a fib level."
     },
-    "build": {
+    "build_8": {
       "op": "churn",
       "src": "Close",
-      "bars": 20,
-      "_doc": "PAUL'S 'BUILDS BEFORE MOVES', as a number. 1 - |net move| / total path travelled: 0 = a straight line, 1 = price travelled hard and ended where it started. Distinct from `stalling`, which has NO PATH TERM and therefore scores 'sat still' and 'churned and came back' identically (both 1.0) -- opposite situations, and Paul trades the second. IT IS THE RATIO, NOT THE VOLUME: relative volume on his builds is 44th-57th percentile, i.e. ordinary. The effort/result read is right but the DENOMINATOR collapses; there is no extra effort. Raw wasted travel does not work either -- it scales with the window and ranks his excluded example highest. Only the ratio separates them. *** `bars` IS THE SEARCH AXIS, NOT A SETTING. *** 20 is a STARTING POINT ONLY. Paul's five labelled builds run 8, 15, 44, 64 and 89 bars -- an 11x spread -- and at a fixed 20 they read 85th/64th/93rd percentile, which is noise. At native length they read 98th/94th/87th/86th, and the one he called 'a different type' correctly falls to 54th. Sweep it (--set=factors.build.bars=N; one grid per value). Leaving it at 20 rebuilds RNG_LOOK and throws the finding away. sign is +1 and left FOR THE SEARCH: whether churn is bullish (accumulation before the break) or bearish is the question, not the assumption -- `stalling` ships sign:-1 and has already answered it the other way, from a literal."
+      "bars": 8,
+      "_doc": "PAUL'S 'BUILDS BEFORE MOVES' at a 8-BAR SCALE -- his shortest labelled build (TSLA, 8 bars). 1 - |net move| / total path travelled: 0 = a straight line, 1 = price travelled hard and ended where it started. FOUR SCALES, ONE GRID, AND THAT IS THE POINT. `bars` is in the grid cache key, so sweeping ONE factor costs a full rebuild per value. Emitting several lets the search weigh short churn against long churn IN THE SAME CONFIG -- they may be different setups, and a fixed single scale is the mistake that made this look like noise: at a fixed 20 bars Paul's own examples read 85th/64th/93rd percentile, and at their native lengths 98th/94th/87th/86th, with the one he called 'a different type' correctly falling to 54th. His builds run 8/15/44/64/89 -- an 11x spread. Adding factors is free now that weights default to 0. IT IS THE RATIO, NOT THE VOLUME: relative volume on his builds is 44th-57th percentile, i.e. ordinary -- the effort/result read is right but the DENOMINATOR collapses. sign +1 and left FOR THE SEARCH: whether churn is accumulation or exhaustion is the question, not the assumption. `stalling` ships sign:-1 and has already answered it the other way, from a literal."
+    },
+    "build_21": {
+      "op": "churn",
+      "src": "Close",
+      "bars": 21,
+      "_doc": "PAUL'S 'BUILDS BEFORE MOVES' at a 21-BAR SCALE -- between his 15- and 44-bar builds. 1 - |net move| / total path travelled: 0 = a straight line, 1 = price travelled hard and ended where it started. One of four scales (8/21/55/89) spanning the 11x range of Paul's labelled builds. See build_8 for the reasoning. IT IS THE RATIO, NOT THE VOLUME: relative volume on his builds is 44th-57th percentile, i.e. ordinary -- the effort/result read is right but the DENOMINATOR collapses. sign +1 and left FOR THE SEARCH: whether churn is accumulation or exhaustion is the question, not the assumption. `stalling` ships sign:-1 and has already answered it the other way, from a literal."
+    },
+    "build_55": {
+      "op": "churn",
+      "src": "Close",
+      "bars": 55,
+      "_doc": "PAUL'S 'BUILDS BEFORE MOVES' at a 55-BAR SCALE -- between his 44- and 64-bar builds. 1 - |net move| / total path travelled: 0 = a straight line, 1 = price travelled hard and ended where it started. One of four scales (8/21/55/89) spanning the 11x range of Paul's labelled builds. See build_8 for the reasoning. IT IS THE RATIO, NOT THE VOLUME: relative volume on his builds is 44th-57th percentile, i.e. ordinary -- the effort/result read is right but the DENOMINATOR collapses. sign +1 and left FOR THE SEARCH: whether churn is accumulation or exhaustion is the question, not the assumption. `stalling` ships sign:-1 and has already answered it the other way, from a literal."
+    },
+    "build_89": {
+      "op": "churn",
+      "src": "Close",
+      "bars": 89,
+      "_doc": "PAUL'S 'BUILDS BEFORE MOVES' at a 89-BAR SCALE -- his longest labelled build (TSLA, 89 bars). 1 - |net move| / total path travelled: 0 = a straight line, 1 = price travelled hard and ended where it started. One of four scales (8/21/55/89) spanning the 11x range of Paul's labelled builds. See build_8 for the reasoning. IT IS THE RATIO, NOT THE VOLUME: relative volume on his builds is 44th-57th percentile, i.e. ordinary -- the effort/result read is right but the DENOMINATOR collapses. sign +1 and left FOR THE SEARCH: whether churn is accumulation or exhaustion is the question, not the assumption. `stalling` ships sign:-1 and has already answered it the other way, from a literal."
     },
     "wt_depth": {
       "op": "spread",

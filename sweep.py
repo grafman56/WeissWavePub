@@ -165,10 +165,29 @@ def _sweep(args, shard=None):
     conf_size = 1 if ("--conf-size" in args or arg(args, "conf-size", "0")
                       not in ("0", "no", "false", "none", "")) else 0
     if conf_entry:
-        w_lists = [listarg(args, f"w-{n}", [1.0], float) for n in FACTOR_NAMES]
+        # 0, not 1 -- and portfolio_multi must agree, or the same config scores
+        # differently depending on which tool you ran it in. A default of 1 made
+        # a bare --conf-entry sum EVERY factor at equal weight, drowning any
+        # weight you actually set: Paul measured w_trend=+1/0/-1 reading
+        # 75/77/72 (noise) until the rest were muted, then 59/16/84.
+        # Pinned in test_gridcache.py.
+        w_lists = [listarg(args, f"w-{n}", [0.0], float) for n in FACTOR_NAMES]
         thr_list = listarg(args, "conf-threshold", [1.0], float)
+        # NAMED, not NONZERO: `--w-trend=0,1` sweeps a mute against a weight and
+        # is exactly the shape of Paul's +1/0/-1 measurement. Only naming
+        # NOTHING is meaningless.
+        named = any(a.startswith(f"--w-{n}=") for n in FACTOR_NAMES for a in args)
+        if not named:
+            fail("--conf-entry with no --w-<factor> given: every factor defaults "
+                 "to 0, so every config in this sweep would score 0 on every bar "
+                 "and take no trades -- a sweep that measured NOTHING, reported "
+                 "exactly like a sweep that found nothing.\n"
+                 "Name at least one factor, e.g. --w-trend=0,1 --w-signal=1,2.\n"
+                 f"Available: {', '.join(FACTOR_NAMES)}")
     else:
-        w_lists = [[1.0] for _ in FACTOR_NAMES]   # muted: no wasted combos
+        # value is irrelevant here (conf_entry off = weights unused); the single
+        # element is what keeps the cartesian product from exploding.
+        w_lists = [[0.0] for _ in FACTOR_NAMES]
         thr_list = [1.0]
     # higher-TF weekly setup screen (tunable): eligible only if the weighted
     # htf_* score clears --htf-threshold (a sweepable axis).
