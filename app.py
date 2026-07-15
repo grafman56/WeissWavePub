@@ -858,7 +858,7 @@ with tab_finder:
 # (entry signals, min_count, confluence window, regime filter).
 PRESET_STRATEGIES = {
     "Standard: MACD cross": (["macd_cross_up"], 1, 0, None),
-    "Standard: MACD cross in uptrend": (["macd_cross_up"], 1, 0, "minervini"),
+    "Standard: MACD cross in uptrend": (["macd_cross_up"], 1, 0, "sma50_over_200"),
     "Standard: Golden cross (50/200)": (["golden_cross"], 1, 0, None),
     "Standard: RSI oversold bounce": (["rsi_oversold_cross"], 1, 0, None),
     "Standard: MACD cross + volume cross": (

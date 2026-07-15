@@ -18,7 +18,7 @@ Extra options:
     --capital=F         starting capital [100000]
     --gate=COL@IV       cross-timeframe trend gate: entries only allowed
                         when column COL was True on the PREVIOUS bar of
-                        interval IV (e.g. --gate=minervini@1d with
+                        interval IV (e.g. --gate=sma50_over_200@1d with
                         --interval=1h day-trades hourly inside a daily
                         uptrend). Same no-lookahead shift as the harness.
 
@@ -81,7 +81,7 @@ def main():
     cost_side = float(arg(args, "cost-bps", "0")) / 10000.0 / 2
     max_pos = int(arg(args, "max-positions", "5"))
     capital = float(arg(args, "capital", "100000"))
-    gate_arg = arg(args, "gate", "minervini@1d")    # trend gate ON by default
+    gate_arg = arg(args, "gate", "sma50_over_200@1d")    # trend gate ON by default
     target = arg(args, "target", None)
     target = float(target) if target not in (None, "none", "") else None
     exit_arg = arg(args, "exit", None)

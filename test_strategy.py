@@ -28,11 +28,11 @@ Options (defaults in brackets):
                     counts - promote survivors with a full-history run [all]
     --gate=COL@IV   cross-timeframe trend gate: entries only allowed when
                     column COL was True on the PREVIOUS bar of interval IV
-                    (e.g. --gate=minervini@1d with --interval=1h trades
+                    (e.g. --gate=sma50_over_200@1d with --interval=1h trades
                     hourly only inside a daily stage-2 uptrend).
-                    [minervini@1d] -- ON BY DEFAULT, pass --gate=none to
+                    [sma50_over_200@1d] -- ON BY DEFAULT, pass --gate=none to
                     trade ungated. This said [none] while the code defaulted
-                    to minervini@1d, so every run carried a daily trend gate
+                    to sma50_over_200@1d, so every run carried a daily trend gate
                     nobody asked for: on heavy_buy 1d/12mo it is the
                     difference between n=4990 (ungated) and n=3017.
     --cost-bps=F    round-trip cost haircut in basis points applied to
@@ -100,8 +100,8 @@ def parse_gates(gate_arg):
 
     Malformed entries FAIL. They used to be silently dropped by
     `[... for g in gate_arg.split(",") if "@" in g]` in portfolio_multi, which
-    meant `--gate=minervini` (forgetting @1d) ran UNGATED while the header still
-    printed `gate=minervini`. One missing @1d took a 12-symbol crypto run from
+    meant `--gate=sma50_over_200` (forgetting @1d) ran UNGATED while the header still
+    printed `gate=sma50_over_200`. One missing @1d took a 12-symbol crypto run from
     443 trades to 537 and claimed a gate that never existed. A backtester that
     reports a filter it did not apply is the same failure as one that reports a
     trade that never fired.
@@ -115,7 +115,7 @@ def parse_gates(gate_arg):
     for g in gate_arg.split(","):
         if "@" not in g:
             fail(f"--gate needs COL@INTERVAL[,COL@INTERVAL...], got {g!r}. "
-                 f"e.g. minervini@1d,above_50ma@4h  (or --gate=none)")
+                 f"e.g. sma50_over_200@1d,above_50ma@4h  (or --gate=none)")
         col, iv = g.split("@", 1)
         if not col or not iv:
             fail(f"--gate entry {g!r} is missing a column or an interval")
@@ -382,7 +382,7 @@ def main():
     months = int(arg(args, "months", "0"))
     cost = float(arg(args, "cost-bps", "0")) / 10000.0
     # trend gate is ON by default (trade with the trend); --gate=none to disable
-    gate_arg = arg(args, "gate", "minervini@1d")
+    gate_arg = arg(args, "gate", "sma50_over_200@1d")
     target = arg(args, "target", None)
     target = float(target) if target not in (None, "none", "") else None
     gates = parse_gates(gate_arg)   # [(col, interval), ...]; all ANDed
@@ -465,7 +465,7 @@ def main():
     # label for two different things, and since the gate is ON BY DEFAULT an
     # applied --filter was never shown at all. `--filter=above_50ma` cut
     # heavy_buy from 3017 to 2319 trades while the header still read
-    # `filter=minervini@1d`. Both were applied; one was invisible. A
+    # `filter=sma50_over_200@1d`. Both were applied; one was invisible. A
     # backtester that misreports what it applied is the same failure as one
     # that reports trades which never fired.
     lines = [f"strategy: {wtxt} (score>={min_count} in {window} "

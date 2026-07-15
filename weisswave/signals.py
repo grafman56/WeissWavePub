@@ -107,7 +107,15 @@ def build_signals(df: pd.DataFrame,
     # the same line. Exposed as columns so factor definitions can reference them.
     out["ema50"] = ema(df["Close"], 50)
     out["ema200"] = ema(df["Close"], 200)
-    out["minervini"] = out["sma50"] > out["sma200"]     # Stage-2 uptrend
+    # Named for what it computes. This was called `minervini`, which promised
+    # the 8-criterion Trend Template (price vs 150/200MA, a rising 200MA,
+    # within 25% of the 52w high, RS rank) and delivered one line that never
+    # looks at price at all. The name made it read as authoritative, so it
+    # became the default gate everywhere and nobody re-examined it -- Paul
+    # himself remembered it as "price > ema50 & ema200". It is the STATE of
+    # which golden_cross is the EVENT. Which screen actually works is goal #3,
+    # and a famous name puts a thumb on that scale.
+    out["sma50_over_200"] = out["sma50"] > out["sma200"]
     out["above_50ma"] = df["Close"] > out["sma50"]
     out["in_up_wave"] = out["wave"] == 1
     out["golden_cross"] = crossover(out["sma50"], out["sma200"])
@@ -149,7 +157,7 @@ SIGNAL_COLUMNS_BULL = [
     "macd_cross_up", "rsi_oversold_cross", "golden_cross",
 ] + _COMBINED_BULL
 
-FILTER_COLUMNS = ["minervini", "above_50ma", "in_up_wave", "buy_dominant"]
+FILTER_COLUMNS = ["sma50_over_200", "above_50ma", "in_up_wave", "buy_dominant"]
 
 SIGNAL_COLUMNS_BEAR = [
     "wt_cross_down", "wt_cross_down_overbought", "wt_enter_overbought",

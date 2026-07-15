@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Edge test for the Pine barcolor combos on lower timeframes. Pooled
 event study: forward returns after each combo vs the all-bars baseline.
-Optional daily-trend gate (--gate=minervini) restricts to bars inside a
+Optional daily-trend gate (--gate=sma50_over_200) restricts to bars inside a
 prior-session daily uptrend. ASCII output.
 
     python combo_event_study.py 1h
-    python combo_event_study.py 1h --gate=minervini
+    python combo_event_study.py 1h --gate=sma50_over_200
 """
 
 import sys

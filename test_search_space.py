@@ -25,20 +25,20 @@ class TestGridSig(unittest.TestCase):
     def test_universe_separates(self):
         # THE BUG: universe was missing, and agent_search's default gate is the
         # same for both universes -> a stocks run collided with a crypto run.
-        a = grid_sig_of("15m", "minervini@1d", "none", 0, "crypto", "factor")
-        b = grid_sig_of("15m", "minervini@1d", "none", 0, "stocks", "factor")
+        a = grid_sig_of("15m", "sma50_over_200@1d", "none", 0, "crypto", "factor")
+        b = grid_sig_of("15m", "sma50_over_200@1d", "none", 0, "stocks", "factor")
         self.assertNotEqual(a, b, "crypto and stocks must not share a grid_sig")
 
     def test_gate_mode_separates(self):
         # a hard-gated score means nothing for a gate-as-factor config
-        a = grid_sig_of("15m", "minervini@1d", "none", 0, "crypto", "hard")
-        b = grid_sig_of("15m", "minervini@1d", "none", 0, "crypto", "factor")
+        a = grid_sig_of("15m", "sma50_over_200@1d", "none", 0, "crypto", "hard")
+        b = grid_sig_of("15m", "sma50_over_200@1d", "none", 0, "crypto", "factor")
         self.assertNotEqual(a, b, "gate_mode changes what a score MEANS")
 
     def test_interval_separates(self):
         self.assertNotEqual(
-            grid_sig_of("5m", "minervini@1d", "none", 0, "crypto", "factor"),
-            grid_sig_of("15m", "minervini@1d", "none", 0, "crypto", "factor"))
+            grid_sig_of("5m", "sma50_over_200@1d", "none", 0, "crypto", "factor"),
+            grid_sig_of("15m", "sma50_over_200@1d", "none", 0, "crypto", "factor"))
 
 
 class TestSampling(unittest.TestCase):

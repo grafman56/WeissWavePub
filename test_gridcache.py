@@ -82,7 +82,7 @@ check("st_tgt identical", np.array_equal(sg0, sg1))
 # 2. cache-key determinism ----------------------------------------------------
 strategies = [{"name": "a", "entry_cols": ["x"], "window": 5, "stop_pct": 0.05}]
 base = dict(strategies=strategies, interval="15m",
-            gate_arg="minervini@1d", market="none", cutoff=None,
+            gate_arg="sma50_over_200@1d", market="none", cutoff=None,
             exit_cols=[], gstop=None, ghold=None, gtarget=None,
             atr_len=14, swing_look=20, db_mtime=111)
 p_base = pm._grid_cache_path(**base)
@@ -260,17 +260,17 @@ check("search_space.json: sim.hold_bars is 0",
 # 6. ONE gate parser -----------------------------------------------------------
 # Four copies of "COL@IV -> (col, iv)" existed and they DISAGREED. portfolio_multi
 # used `[... for g in gate_arg.split(",") if "@" in g]`, which silently DROPS a
-# malformed entry: `--gate=minervini` (forgetting @1d) ran UNGATED while the
-# header still printed `gate=minervini`. 443 trades -> 537 and a gate that never
+# malformed entry: `--gate=sma50_over_200` (forgetting @1d) ran UNGATED while the
+# header still printed `gate=sma50_over_200`. 443 trades -> 537 and a gate that never
 # existed. Reporting a filter you did not apply is the same failure as reporting
 # a trade that never fired.
 _pg = ts.parse_gates
 
 check("none -> no gates", _pg("none") == [] and _pg("") == [])
-check("single gate parses", _pg("minervini@1d") == [("minervini", "1d")])
+check("single gate parses", _pg("sma50_over_200@1d") == [("sma50_over_200", "1d")])
 check("stacked gates parse",
-      _pg("minervini@1d,above_50ma@4h")
-      == [("minervini", "1d"), ("above_50ma", "4h")])
+      _pg("sma50_over_200@1d,above_50ma@4h")
+      == [("sma50_over_200", "1d"), ("above_50ma", "4h")])
 
 
 def _rejects(s):
@@ -281,11 +281,11 @@ def _rejects(s):
         return True
 
 
-check("a gate with no @interval is REJECTED, not dropped", _rejects("minervini"))
-check("a missing interval is rejected", _rejects("minervini@"))
+check("a gate with no @interval is REJECTED, not dropped", _rejects("sma50_over_200"))
+check("a missing interval is rejected", _rejects("sma50_over_200@"))
 check("a missing column is rejected", _rejects("@1d"))
 check("one bad entry rejects the whole list",
-      _rejects("minervini@1d,above_50ma"))
+      _rejects("sma50_over_200@1d,above_50ma"))
 
 # ...and nobody kept a private copy. Compare CODE, not prose: ast.unparse drops
 # docstrings and comments, so the notes explaining what was removed cannot be

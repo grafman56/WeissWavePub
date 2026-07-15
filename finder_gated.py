@@ -6,15 +6,14 @@ every discovered entry is in-trend by construction.
 
     python finder_gated.py 15m [n_symbols] [max_size]
     python finder_gated.py 15m --gate=rci_bull@1d
-    python finder_gated.py 5m  --gate=minervini@1d,above_50ma@4h,in_up_wave@1h
+    python finder_gated.py 5m  --gate=sma50_over_200@1d,above_50ma@4h,in_up_wave@1h
     python finder_gated.py 15m --gate=none        (ungated, for comparison)
 
 WHICH SCREEN WINS IS A TEST, NOT A CONSTANT. The screen is just a trend gauge:
 higher timeframes pick the tradable stocks, the finder searches the low TF for
-the entry. Which gauge is best is empirical. This was
-`GATES = [("minervini","1d"), ("above_50ma","4h")]` hardcoded with no override,
-so testing any other screen meant editing the file. The default below keeps the
-old behaviour; --gate makes it a question.
+the entry. Which gauge is best is empirical. The gates used to be a module
+constant with no override, so testing any other screen meant editing the file.
+The default below keeps the old behaviour; --gate makes it a question.
 
 Note: finder output is GROSS (no cost). Cost-test survivors with
 test_strategy.py --cost-bps=10. ASCII output."""
@@ -33,7 +32,7 @@ _pos = [a for a in _args if not a.startswith("--")]   # flags are not positional
 INTERVAL = _pos[0] if _pos else "15m"
 N_SYMBOLS = int(_pos[1]) if len(_pos) > 1 else 200
 MAX_SIZE = int(_pos[2]) if len(_pos) > 2 else 2
-GATES = parse_gates(arg(_args, "gate", "minervini@1d,above_50ma@4h"))
+GATES = parse_gates(arg(_args, "gate", "sma50_over_200@1d,above_50ma@4h"))
 
 # per-interval horizons (bars) and holds (bars): ~half-day / 1-day, 1-day / 3-day
 PARAMS = {"5m":  {"horizons": (39, 78),  "holds": (39, 78)},

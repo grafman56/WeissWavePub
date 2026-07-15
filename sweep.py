@@ -119,7 +119,7 @@ def _sweep(args, shard=None):
     configs i::n (for parallel workers); the grid is loaded from cache so every
     shard shares it cheaply."""
     interval = arg(args, "interval", "15m")
-    gate = arg(args, "gate", "minervini@1d,above_50ma@4h")
+    gate = arg(args, "gate", "sma50_over_200@1d,above_50ma@4h")
     market = arg(args, "market", "none")
     universe = arg(args, "universe", "stocks")   # stocks | crypto | all | list
     months = int(arg(args, "months", "0"))

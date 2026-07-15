@@ -6,7 +6,7 @@ are ranked by confluence score. Each position carries its own strategy's
 stop / target / hold / exit-signal. This is how deployment rises: any single
 edge is low-frequency, but a stack of them keeps the account working.
 
-    python portfolio_multi.py --interval=15m --gate=minervini@1d,above_50ma@4h \
+    python portfolio_multi.py --interval=15m --gate=sma50_over_200@1d,above_50ma@4h \
         --cost-bps=10 --max-positions=5
 
 Strategies are read from bot_strategies.json (see that file's format). Shared
@@ -112,7 +112,7 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
     numba engine, plus per-bar best-strategy entry/score/index and stop refs.
 
     gate_mode decides how the higher-TF trend gate (`--gate`, e.g.
-    minervini@1d) reaches the engine -- it is a CHOICE, not a law:
+    sma50_over_200@1d) reaches the engine -- it is a CHOICE, not a law:
       "hard"   : the gate ANDs the strategy signal (a bar outside the daily
                  uptrend can never be an entry). What the CLI tools expect.
       "factor" : the signal is left ungated and the trend travels ONLY via the
@@ -425,12 +425,12 @@ def _require_gated(frames, n_before, gates, universe):
 
     apply_gates drops a symbol outright when the gate's interval has no data for
     it -- correct (you cannot confirm a trend you cannot see), but silent. The
-    default gate here is minervini@1d,above_50ma@4h and CRYPTO HAS NO 4h DATA,
+    default gate here is sma50_over_200@1d,above_50ma@4h and CRYPTO HAS NO 4h DATA,
     so `--universe=crypto` with the defaults dropped all 12 symbols, built an
     empty grid, and died 250 lines later on
     `IndexError: index -1 is out of bounds for axis 0 with size 0` while
     computing years from an empty equity curve. A documented gotcha
-    ("crypto runs need --gate=minervini@1d") that presented as a traceback.
+    ("crypto runs need --gate=sma50_over_200@1d") that presented as a traceback.
 
     test_strategy already fails cleanly here; this is the same check.
     """
@@ -452,7 +452,7 @@ def _require_gated(frames, n_before, gates, universe):
          f"  gate = {','.join(f'{c}@{iv}' for c, iv in gates)}\n"
          + "\n".join(lines)
          + (f"\n  no data at all for: {', '.join(missing)}" if missing else "")
-         + f"\n  crypto only has 15m and 1d -- use --gate=minervini@1d, or "
+         + f"\n  crypto only has 15m and 1d -- use --gate=sma50_over_200@1d, or "
            f"--gate=none.")
 
 
@@ -490,7 +490,7 @@ def _apply_market(frames, market):
 
 
 def prepare_grid(strategies, interval="15m",
-                 gate_arg="minervini@1d,above_50ma@4h", market="none",
+                 gate_arg="sma50_over_200@1d,above_50ma@4h", market="none",
                  months=0, exit_cols=None, gstop=None, ghold=None,
                  gtarget=None, atr_len=14, swing_look=20, cutoff=None,
                  fib=None, universe="stocks", gate_mode="hard",
@@ -601,7 +601,7 @@ def _load_grid(path):
 
 
 def prepare_grid_cached(strategies, interval="15m",
-                        gate_arg="minervini@1d,above_50ma@4h", market="none",
+                        gate_arg="sma50_over_200@1d,above_50ma@4h", market="none",
                         months=0, exit_cols=None, gstop=None, ghold=None,
                         gtarget=None, atr_len=14, swing_look=20, fib=None,
                         universe="stocks", gate_mode="hard",
@@ -640,7 +640,7 @@ BOT_FILE = "bot_strategies.json"
 def main():
     args = sys.argv[1:]
     interval = arg(args, "interval", "15m")
-    gate_arg = arg(args, "gate", "minervini@1d,above_50ma@4h")
+    gate_arg = arg(args, "gate", "sma50_over_200@1d,above_50ma@4h")
     cost_side = float(arg(args, "cost-bps", "0")) / 10000.0 / 2
     max_pos = int(arg(args, "max-positions", "5"))
     capital = float(arg(args, "capital", "100000"))

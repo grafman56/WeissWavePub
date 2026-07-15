@@ -15,8 +15,8 @@
     "_doc": "How the data grid is built. Changing any of these builds (and caches) a different grid.",
     "interval": "15m",
     "_interval_doc": "The LOW timeframe the trades are made on. The cascade's 'dial down' target. Try 5m/15m/1h.",
-    "gate": "minervini@1d",
-    "_gate_doc": "WHICH criteria the daily trend means (e.g. minervini@1d, above_50ma@4h, or 'none'). This selects the definition; gate_mode decides whether it is a law or an opinion.",
+    "gate": "sma50_over_200@1d",
+    "_gate_doc": "WHICH criteria the daily trend means (e.g. sma50_over_200@1d, above_50ma@4h, or 'none'). This selects the definition; gate_mode decides whether it is a law or an opinion.",
     "gate_mode": "factor",
     "_gate_mode_doc": "'factor' = the trend is carried ONLY by the weighted `trend` factor, so w_trend decides how much it matters (0 = ignore, large = de facto gate). 'hard' = the old behaviour, the gate ANDs the signal and no weight can escape it. NOTE: 'catching the knife' (timing the reversal of a major downtrend) is ONLY testable in 'factor' mode -- a hard trend gate vetoes every knife entry by definition, since you are buying while the trend is down.",
     "fib_anchor": "1d",
@@ -112,12 +112,13 @@
       "src": "very_heavy_buy"
     },
     "_doc_filters": [
-      "FILTERS ARE FACTORS TOO. 'Trade with the trend' stops being a law the search cannot see and becomes a weight it has to EARN. w_flt_minervini = 0 tests the strategy with that filter OFF; a large weight makes it a de facto gate. Which screen works best -- minervini vs above_50ma vs the RCI ichimoku read -- is now an empirical question the search answers, which is what Paul has been asking for since the start.",
+      "FILTERS ARE FACTORS TOO. 'Trade with the trend' stops being a law the search cannot see and becomes a weight it has to EARN. w_flt_sma50_over_200 = 0 tests the strategy with that filter OFF; a large weight makes it a de facto gate. Which screen works best -- sma50_over_200 vs above_50ma vs the RCI ichimoku read -- is now an empirical question the search answers, which is what Paul has been asking for since the start.",
       "Note these are 0/1 columns, so they only ever ARGUE FOR a long (never against). Use sign:-1 on a copy if you want the absence to push back."
     ],
-    "flt_minervini": {
+    "flt_sma50_over_200": {
       "op": "column",
-      "src": "minervini"
+      "src": "sma50_over_200",
+      "_doc": "sma50 > sma200. ONE LINE, and it never looks at price -- it is purely whether the two SMAs are stacked, i.e. the STATE of which golden_cross is the EVENT. Called `minervini` until 2026-07-14, which promised the 8-criterion Trend Template and delivered this; the name made it read as authoritative and it became the default gate everywhere unexamined. The real template (price > 150MA > 200MA, rising 200MA, within 25% of the 52w high, RS rank) is a DIFFERENT screen and is not built."
     },
     "flt_above_50ma": {
       "op": "column",

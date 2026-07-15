@@ -27,7 +27,7 @@ from weisswave.signals import SIGNAL_COLUMNS_BULL
 INTERVAL = "5m"
 _args = sys.argv[1:]
 _pos = [a for a in _args if not a.startswith("--")]   # flags are not positional
-GATES = parse_gates(arg(_args, "gate", "minervini@1d,above_50ma@4h"))
+GATES = parse_gates(arg(_args, "gate", "sma50_over_200@1d,above_50ma@4h"))
 N_SYMBOLS = int(_pos[0]) if _pos else 150
 
 t0 = time.time()
