@@ -128,20 +128,45 @@ def load_universe(interval: str, cutoff, sig_params: dict = None) -> dict:
                   f"fresh data")
             return _frames_from_parquet(key, cutoff)
         parts = []
+        too_short = 0
+        raised = 0
+        first_err = None
         for s in list_symbols(con, interval):
             df = load_prices(con, s, interval)
             if len(df) < 300:
+                too_short += 1
                 continue
             try:
                 sig = build_signals(df, **(sig_params or {}))
-            except Exception:
+            except Exception as e:              # noqa: BLE001
+                # Skipping ONE genuinely bad symbol is right; the universe
+                # should not sink because a ticker has a broken bar. But the
+                # same error on EVERY symbol is a params/code bug, not bad
+                # data -- and this swallow used to report it as "no usable
+                # data in market.duckdb", sending you to inspect a database
+                # that was never wrong. Keep the first error and account for
+                # it below.
+                raised += 1
+                if first_err is None:
+                    first_err = e
                 continue
             sig.index.name = "ts"
             sig["symbol"] = s
             parts.append(sig.reset_index())
         con.close()
         if not parts:
-            fail(f"no usable {interval} data in {DB_PATH}")
+            if first_err is not None:
+                fail(f"build_signals raised on all {raised} symbols that have "
+                     f"usable {interval} data. That is a params/code error, "
+                     f"not the DB. First: "
+                     f"{type(first_err).__name__}: {first_err}")
+            fail(f"no usable {interval} data in {DB_PATH} ({too_short} symbols "
+                 f"under the {300}-bar minimum)")
+        if raised:
+            # a PARTIAL silent failure is the same disease, just survivable
+            print(f"WARNING: build_signals raised on {raised}/"
+                  f"{raised + len(parts)} symbols; first: "
+                  f"{type(first_err).__name__}: {first_err}")
         os.makedirs(CACHE_DIR, exist_ok=True)
         for old in glob.glob(os.path.join(          # incl. older schemas
                 CACHE_DIR, f"signals_{interval.replace(':', '')}_*.parquet")):

@@ -74,15 +74,33 @@ def load_space(path=None, overrides=None):
     return sp
 
 
+def strip_docs(o):
+    """Drop _-prefixed documentation keys at EVERY depth.
+
+    The space file carries prose for the reader (and for the strategist model)
+    inline with the values. Anything that feeds those values to real code has to
+    remove it FIRST, or the prose arrives as a keyword argument.
+
+    This lived as a closure inside space_sig(); agent_search needed the same
+    thing, could not reach it, and reimplemented it as a flat one-level
+    comprehension. That shipped `signals.combined.tdi._oversold_doc` straight
+    into tdi_signals() as a kwarg -- TypeError on every symbol, swallowed by a
+    bare except, surfaced as "no usable 1d data in market.duckdb". A docstring
+    in a JSON file blamed the database. One implementation, exported, so the
+    next caller cannot get it subtly wrong.
+    """
+    if isinstance(o, dict):
+        return {k: strip_docs(v) for k, v in o.items()
+                if not k.startswith("_")}
+    if isinstance(o, list):
+        return [strip_docs(v) for v in o]
+    return o
+
+
 def space_sig(sp):
     """A stable signature of the space, minus the _doc noise. Recorded on every
     results row so a survivor is always traceable to the bar it cleared."""
-    def strip(o):
-        if isinstance(o, dict):
-            return {k: strip(v) for k, v in o.items()
-                    if not k.startswith("_")}
-        return o
-    return json.dumps(strip(sp), sort_keys=True, default=str)
+    return json.dumps(strip_docs(sp), sort_keys=True, default=str)
 
 
 def _draw(r, d, n=None):

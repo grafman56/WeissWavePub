@@ -11,7 +11,7 @@ import numpy as np
 
 from portfolio_multi import FACTOR_NAMES, HTF_START
 from search_space import (load_space, mutate_cfg, parse_set_args, sample_cfg,
-                          space_sig)
+                          space_sig, strip_docs)
 from sweep import grid_sig_of
 
 K = len(FACTOR_NAMES)
@@ -142,6 +142,44 @@ class TestUnfitLogic(unittest.TestCase):
     def test_min_trades_threshold_is_honoured(self):
         self.assertEqual(self._fit(9, 10, 99.0, 0.0), -np.inf)
         self.assertNotEqual(self._fit(10, 10, 99.0, 0.0), -np.inf)
+
+
+class TestStripDocs(unittest.TestCase):
+    """The space file carries prose inline with the values it configures.
+    agent_search stripped the _doc keys ONE level deep, so
+    signals.combined.tdi._oversold_doc rode into tdi_signals() as a keyword
+    argument: TypeError on every symbol, swallowed by a bare except, and
+    surfaced as "no usable 1d data in market.duckdb". A docstring in a JSON
+    file accused the database, and the whole agent search path was dead."""
+
+    def test_strips_at_every_depth(self):
+        o = {"a": 1, "_doc": "x",
+             "b": {"c": 2, "_doc": "y", "d": {"e": 3, "_doc": "z"}}}
+        self.assertEqual(strip_docs(o), {"a": 1, "b": {"c": 2, "d": {"e": 3}}})
+
+    def test_recurses_into_lists(self):
+        o = {"a": [{"b": 1, "_doc": "x"}, {"c": 2}]}
+        self.assertEqual(strip_docs(o), {"a": [{"b": 1}, {"c": 2}]})
+
+    def test_leaves_real_values_alone(self):
+        o = {"oversold": 40.0, "rsi_len": 21, "nested": {"k": [1, 2]}}
+        self.assertEqual(strip_docs(o), o)
+
+    def test_real_space_signals_are_accepted_by_build_signals(self):
+        """The integration check that would have caught it. Whatever the
+        shipped space says under "signals" must be callable as
+        build_signals(**that) -- at EVERY nesting depth. No DB needed."""
+        import pandas as pd
+        from weisswave.signals import build_signals
+        params = strip_docs(load_space("search_space.json").get("signals", {}))
+        n = 400
+        rng = np.random.default_rng(0)
+        close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        df = pd.DataFrame(
+            {"Open": close, "High": close * 1.01, "Low": close * 0.99,
+             "Close": close, "Volume": np.full(n, 100.0)},
+            index=pd.bdate_range("2024-01-01", periods=n))
+        build_signals(df, **params)          # must not raise
 
 
 if __name__ == "__main__":

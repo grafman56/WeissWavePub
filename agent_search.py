@@ -52,7 +52,8 @@ from portfolio_multi import (FACTOR_NAMES, HTF_START,      # noqa: E402
                              MAINSTREAM_COLUMNS, STOP_MODES, TRAIL_MODES,
                              prepare_grid_cached)
 from search_space import (DEFAULT_SPACE, load_space,       # noqa: E402
-                          mutate_cfg, parse_set_args, sample_cfg, space_sig)
+                          mutate_cfg, parse_set_args, sample_cfg, space_sig,
+                          strip_docs)
 from sweep import RESULTS_DIR, grid_sig_of, load_results, save_results
 from test_strategy import arg
 from weisswave import portsim
@@ -82,9 +83,11 @@ def parse_job(args):
         "gate": arg(args, "gate", G["gate"]),
         "gate_mode": arg(args, "gate-mode", G["gate_mode"]),
         "fib_anchor": arg(args, "fib-anchor", G["fib_anchor"]),
-        # indicator sensitivity: a GRID dimension (rebuilds signals+grid)
-        "sig_params": {k: v for k, v in sp.get("signals", {}).items()
-                       if not k.startswith("_")},
+        # indicator sensitivity: a GRID dimension (rebuilds signals+grid).
+        # strip_docs, not a local comprehension: the _doc keys nest (they sit on
+        # combined.tdi, combined.wt, combined.pivots), and a one-level strip
+        # passes them to build_signals as kwargs.
+        "sig_params": strip_docs(sp.get("signals", {})),
         "interval": arg(args, "interval", G["interval"]),
         "market": arg(args, "market", G["market"]),
         "months": int(arg(args, "months", str(G["months"]))),
