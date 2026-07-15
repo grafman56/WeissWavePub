@@ -23,6 +23,7 @@ import sys
 import numpy as np
 import pandas as pd
 
+from weisswave.codesig import package_sig
 from test_strategy import (GATE_DUR, apply_gates, arg, emit, fail,
                            load_universe)
 from weisswave import portsim
@@ -525,6 +526,16 @@ def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
         "factors": _FACTOR_SPEC,
         # the indicator params change what every signal column MEANS
         "sig_params": sig_params or {},
+        # ...and so does the code computing them. _FACTOR_SPEC covers the factor
+        # DEFINITIONS (data); this covers the math they compile down to, plus
+        # every indicator feeding the grid. Without it a value-only fix -- the
+        # rising() class of bug -- leaves this key untouched and serves numbers
+        # the current code disowns.
+        # NOT covered: build_grid itself, which lives in this file. Hashing it
+        # would rebuild 5GB of grids on every edit to the module people edit
+        # most; the tradeoff is deliberate, so a build_grid fix still needs the
+        # GRID_SCHEMA_VERSION bump below.
+        "code": package_sig("signals", "factors", "structure"),
     }, sort_keys=True, default=str)
     h = hashlib.sha1(payload.encode()).hexdigest()[:16]
     return os.path.join(GRID_CACHE_DIR,

@@ -46,6 +46,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from weisswave.codesig import package_sig
 from weisswave.db import DB_PATH, connect, list_symbols, load_prices
 from weisswave.optimize import evaluate_config
 from weisswave.signals import (FILTER_COLUMNS, SIGNAL_COLUMNS_BEAR,
@@ -55,14 +56,25 @@ STRATEGIES_PATH = "strategies.json"
 RESULTS_LOG = os.path.join("agent-tasks", "results.log")
 CACHE_DIR = "signals_cache"
 
-# BUMP THIS whenever build_signals gains/renames/changes a column. The cache
-# was keyed on the DB mtime ALONE, so a signal-code change did not invalidate
-# it: a stale cache would quietly serve frames missing the new columns, and
-# apply_gates DROPS any symbol whose gate column is absent -- i.e. asking for a
-# brand-new gate would silently empty the universe instead of erroring.
+# A manual escape hatch for invalidations that are NOT visible in our source:
+# a duckdb/pandas upgrade that changes float output, a data backfill that
+# rewrites history under an unchanged mtime. Bump it when the numbers should
+# change and nothing in weisswave/ did.
+#
+# It no longer carries code changes -- SIGNAL_CODE_SIG does, automatically.
+# This constant used to be the only guard, and its contract ("bump when a
+# column is added or renamed") missed the failure that mattered: the rising()
+# fix changed every volume column's VALUE and no column's NAME, so v3 was still
+# honest and a pre-fix cache was still a valid hit. Guards a human has to
+# remember are only as good as the last time someone remembered.
 # v2 = RCI columns added (rci_bull/bear/breakup/breakdn/heat/...).
 # v3 = ema50/ema200 columns added (factor definitions reference them).
 SIGNALS_SCHEMA_VERSION = 3
+
+# Hash of build_signals and every weisswave module it imports. Any edit to the
+# math -- new column, renamed column, or the same columns with different values
+# -- lands here and forces a rebuild.
+SIGNAL_CODE_SIG = package_sig("signals")
 
 
 def sig_params_sig(params):
@@ -90,6 +102,7 @@ def load_universe(interval: str, cutoff, sig_params: dict = None) -> dict:
                        f"signals_{interval.replace(':', '')}_"
                        f"{int(os.path.getmtime(DB_PATH))}_"
                        f"v{SIGNALS_SCHEMA_VERSION}_"
+                       f"{SIGNAL_CODE_SIG}_"
                        f"{sig_params_sig(sig_params)}.parquet")
     if not os.path.exists(key):
         try:
@@ -97,17 +110,18 @@ def load_universe(interval: str, cutoff, sig_params: dict = None) -> dict:
         except Exception:
             # DB is write-locked (backfill/fetch running). Iterate on the
             # newest existing cache rather than blocking the whole workflow.
-            # only THIS schema version: an older-schema cache lacks columns the
-            # caller may be asking for, and a missing gate column silently
-            # drops symbols rather than erroring
+            # Only THIS schema version AND this code signature: the wildcard is
+            # on the DB mtime alone, so we fall back to older DATA built by
+            # today's code, never to numbers this code would no longer produce.
             older = glob.glob(os.path.join(
                 CACHE_DIR, f"signals_{interval.replace(':', '')}_*_"
                            f"v{SIGNALS_SCHEMA_VERSION}_"
+                           f"{SIGNAL_CODE_SIG}_"
                            f"{sig_params_sig(sig_params)}.parquet"))
             if not older:
                 fail(f"DB is locked (a fetch/backfill is running?) and no "
                      f"cached {interval} signals exist for schema "
-                     f"v{SIGNALS_SCHEMA_VERSION}")
+                     f"v{SIGNALS_SCHEMA_VERSION} / code {SIGNAL_CODE_SIG}")
             key = max(older, key=os.path.getmtime)
             print(f"WARNING: DB busy - using STALE signal cache "
                   f"{os.path.basename(key)}; rerun after the fetch for "

@@ -5,6 +5,8 @@ things: (1) save->load reproduces every array byte-for-byte with dtypes and
 python-str symbols intact; (2) the cache key changes iff a build input
 changes. No DB needed. Run: python test_gridcache.py (exit 0 = all pass)."""
 
+import ast
+import inspect
 import os
 import sys
 import tempfile
@@ -105,6 +107,83 @@ check("exit_cols change -> different path",
 check("db_mtime change -> different path (and prunable token)",
       changed(db_mtime=222) != p_base
       and "_222_" in os.path.basename(changed(db_mtime=222)))
+
+
+# 3. code-signature invalidation ----------------------------------------------
+# The guard these tests exist for. Every check above varies an INPUT; none
+# varies the CODE, which is how a fixed rising() and a stale cache coexisted.
+from weisswave import codesig  # noqa: E402
+
+FAKE = {
+    "signals": b"from .core import ema\nfrom .rci import rci\n",
+    "core": b"def ema(x): return x\n",
+    "rci": b"def rci(x): return x\n",
+    "unrelated": b"def nobody_imports_me(): pass\n",
+}
+
+
+def fake_sig(*roots, **over):
+    src = {**FAKE, **over}
+    codesig.package_sig.cache_clear()
+    real = codesig._module_src
+    codesig._module_src = lambda n: src.get(n)
+    try:
+        return codesig.package_sig(*roots)
+    finally:
+        codesig._module_src = real
+        codesig.package_sig.cache_clear()
+
+
+s_base = fake_sig("signals")
+check("identical source -> identical sig", fake_sig("signals") == s_base)
+
+# the rising() shape: same name, same signature, same columns, different math
+check("value-only edit to a reached module -> different sig",
+      fake_sig("signals", core=b"def ema(x): return x * 2\n") != s_base)
+check("edit to a TRANSITIVELY reached module -> different sig",
+      fake_sig("signals", rci=b"def rci(x): return x + 1\n") != s_base)
+check("edit to an unreached module -> SAME sig (no false rebuilds)",
+      fake_sig("signals", unrelated=b"def nobody(): return 99\n") == s_base)
+check("root itself is hashed",
+      fake_sig("signals", signals=b"from .core import ema\n") != s_base)
+check("optional/absent module is not fatal",
+      isinstance(fake_sig("signals", signals=b"from .missing import x\n"), str))
+
+# nested imports: signals.py really does import .combined inside a try/except,
+# so a module-level-only scan would drop it and miss the whole suite
+check("import nested in a try/except is still reached",
+      fake_sig("signals",
+               signals=b"try:\n    from .core import ema\nexcept ImportError:\n    ema = None\n",
+               core=b"def ema(x): return 1\n")
+      != fake_sig("signals",
+                  signals=b"try:\n    from .core import ema\nexcept ImportError:\n    ema = None\n",
+                  core=b"def ema(x): return 2\n"))
+
+# and the real graph, not just the fake one: the modules the bug lived in must
+# actually be covered, or all of the above is theatre
+def reached(*roots):
+    seen, stack = set(), list(roots)
+    while stack:
+        n = stack.pop()
+        if n in seen:
+            continue
+        src = codesig._module_src(n)
+        if src is None:
+            continue
+        seen.add(n)
+        stack.extend(codesig._relative_imports(ast.parse(src, filename=n)))
+    return seen
+
+
+_sig_graph = reached("signals")
+check("real signals graph reaches core (where rising lives)",
+      "core" in _sig_graph)
+check("real signals graph reaches weiswave (the wave engine)",
+      "weiswave" in _sig_graph)
+check("real grid graph reaches factors and structure",
+      {"factors", "structure"} <= reached("signals", "factors", "structure"))
+check("grid cache key actually carries the code signature",
+      '"code"' in inspect.getsource(pm._grid_cache_path))
 
 
 if __name__ == "__main__":
