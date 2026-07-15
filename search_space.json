@@ -31,7 +31,8 @@
       "SIGN IS EXPLICIT and it matters: weights are sampled non-negative, so the definition must say what the factor MEANS. Falling sell-volume is bullish; falling price is not -- the op cannot know which you meant. Use \"sign\": -1 to flip.",
       "ops: falling, rising, cross_up, cross_down, dist_above, prox, stall, hh_hl, fails_to_break, column. See weisswave/factors.py.",
       "src/ref are signal columns (Close, volumeup, volumedn, ema200, sma50, wt1, rci_l, fib_p2, ...) or a plain number. Never an expression -- a strategy file is untrusted input and must never be eval'd.",
-      "NOTE: these are read from THIS file at import (portfolio_multi builds FACTOR_NAMES from it). --space=FILE swaps the other knobs but not the factor list; edit here to change what exists. The grid cache keys on this spec, so a change rebuilds rather than silently reusing the old layout."
+      "NOTE: these are read from THIS file at import (portfolio_multi builds FACTOR_NAMES from it). --space=FILE swaps the other knobs but not the factor list; edit here to change what exists. The grid cache keys on this spec, so a change rebuilds rather than silently reusing the old layout.",
+      "pivot_confirm turns Pine's lbR into a WEIGHT. lbR is applied to a bar that already happened -- pivothigh/pivotlow only DECLARE a pivot once enough right-side bars prove it was an extreme -- so lbR is both how much evidence you demand AND how late you act, and those fight. Frozen at one value it is a permanent guess. Emitted as evidence, the search prices it: a 1-bar-old pivot contributes little (clears the threshold only when other factors agree), a 6-bar-old one contributes fully but arrives late. Do NOT use sign:-1 to mean 'prefer early' -- 0 means no candidate, not maximum earliness. Earliness lives in the weight and the entry threshold."
     ],
     "sell_exhaustion": {
       "op": "falling",
@@ -129,6 +130,14 @@
     "flt_rci_bull": {
       "op": "column",
       "src": "rci_bull"
+    },
+    "spr_confirm": {
+      "op": "pivot_confirm",
+      "src": "volumedn",
+      "side": "high",
+      "lbL": 6,
+      "cap": 6,
+      "_doc": "The SPR question as a dial instead of a constant. spr is a bear divergence on volumedn confirmed at a frozen lbR=1 -- the weakest possible evidence, one bar. This emits how much right-side evidence the volumedn peak has actually survived (0=none or beaten, 1.0=cap bars). lbL=6/cap=6 mirror the spr pivot family in combined.py. Tune lbL/cap here; the WEIGHT decides how much confirmation the setup demands."
     }
   },
   "signals": {

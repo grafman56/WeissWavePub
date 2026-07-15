@@ -44,6 +44,8 @@ DEFS = {
     "hh_hl": {"op": "hh_hl", "bars": 10},
     "fails_to_break": {"op": "fails_to_break", "src": "Low", "ref": "ema200",
                        "bars": 3},
+    "pivot_confirm": {"op": "pivot_confirm", "src": "volumedn", "side": "high",
+                      "lbL": 6, "cap": 6},
     "column": {"op": "column", "src": "volumeup"},
 }
 
@@ -163,6 +165,81 @@ class TestSemantics(unittest.TestCase):
         v = compile_factor(sig, "x", {"op": "dist_above", "src": "Close",
                                       "ref": "ema200"})
         self.assertTrue((v < 0).all())
+
+
+class TestPivotConfirm(unittest.TestCase):
+    """lbR as a weight instead of a threshold. The op has to earn two things:
+    the ramp (evidence accumulating) and the collapse (a candidate beaten on the
+    right was never a pivot). Both matter -- a counter that only ever counts up
+    would happily weight a peak that price already blew through."""
+
+    def sig(self, vals):
+        n = len(vals)
+        c = np.full(n, 100.0)
+        return pd.DataFrame(
+            {"Open": c, "High": c, "Low": c, "Close": c,
+             "Volume": np.full(n, 1.0), "volumedn": np.asarray(vals, float)},
+            index=pd.date_range("2024-01-01", periods=n, freq="D"))
+
+    def f(self, vals, **over):
+        d = {"op": "pivot_confirm", "src": "volumedn", "side": "high",
+             "lbL": 3, "cap": 6, **over}
+        return compile_factor(self.sig(vals), "x", d)
+
+    def test_evidence_ramps_as_bars_survive(self):
+        #                 0  1  2   3   4  5
+        v = self.f([1, 2, 3, 10, 4, 5])
+        self.assertAlmostEqual(v[3], 0.0)          # the pivot bar itself: nothing yet
+        self.assertAlmostEqual(v[4], 1 / 6)        # one bar of right-side evidence
+        self.assertAlmostEqual(v[5], 2 / 6)        # two
+
+    def test_a_candidate_beaten_on_the_right_collapses_to_zero(self):
+        # 20 prints straight through the 10 peak: it was never a pivot, and the
+        # factor has to say so on its own. This is BTC 2025-04-29 in miniature.
+        v = self.f([1, 2, 3, 10, 4, 5, 20])
+        self.assertAlmostEqual(v[5], 2 / 6)        # still live one bar earlier
+        self.assertAlmostEqual(v[6], 0.0)          # beaten -> gone
+
+    def test_never_exceeds_one_at_cap(self):
+        v = self.f([1, 2, 3, 10, 4, 5, 6, 7, 8, 9], cap=6)
+        self.assertAlmostEqual(v[9], 1.0)          # 6 bars survived, capped
+        self.assertLessEqual(float(np.max(v)), 1.0)
+
+    def test_a_candidate_that_never_beat_its_left_is_not_a_pivot(self):
+        # 5 is a local high to its right but 10 sits in its left window
+        v = self.f([1, 10, 3, 5, 4])
+        self.assertAlmostEqual(v[4], 0.0)
+
+    def test_side_low_mirrors(self):
+        v = self.f([9, 8, 7, 1, 5, 6], side="low")
+        self.assertAlmostEqual(v[4], 1 / 6)
+        self.assertAlmostEqual(v[5], 2 / 6)
+
+    def test_bad_side_is_a_readable_error_not_a_traceback(self):
+        with self.assertRaises(FactorError):
+            self.f([1, 2, 3], side="sideways")
+
+    def test_agrees_with_the_verified_pine_pivot_at_the_frozen_lbR(self):
+        """Ties the new weighted op to the binary one that is already verified
+        against Paul's chart. Wherever pine_pivot_high(lbL, lbR) declares a
+        pivot, the weighted op must read exactly lbR/cap -- same event, same
+        bar, evidence reported instead of thresholded."""
+        from weisswave.divergence import pine_pivot_high
+        rng = np.random.default_rng(7)
+        vals = np.abs(np.cumsum(rng.normal(0, 50, 400))) + 100
+        sig = self.sig(vals)
+        for lbR in (1, 2, 3):
+            binary = pine_pivot_high(sig["volumedn"], 3, lbR)
+            weighted = pd.Series(
+                compile_factor(sig, "x", {"op": "pivot_confirm",
+                                          "src": "volumedn", "side": "high",
+                                          "lbL": 3, "cap": 6}),
+                index=sig.index)
+            hits = weighted[binary.astype(bool)]
+            self.assertTrue(len(hits) > 0, f"lbR={lbR}: no pivots to compare")
+            self.assertTrue(np.allclose(hits, lbR / 6, atol=1e-9),
+                            f"lbR={lbR}: weighted op disagrees with the "
+                            f"verified pine pivot")
 
 
 if __name__ == "__main__":

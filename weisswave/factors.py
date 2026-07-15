@@ -152,6 +152,59 @@ def _op_fails_to_break(sig, p):
     return (pierced & (sig["Close"].astype(float) > r)).astype(float)
 
 
+def _op_pivot_confirm(sig, p):
+    """How many bars of RIGHT-side evidence the most recent still-unbeaten pivot
+    in `src` has survived, as a fraction of `cap`. 0 = nothing live.
+
+    This is Pine's lbR as a WEIGHT instead of a threshold, and that is the whole
+    point. lbR ("look back range") is applied to a bar that has already
+    happened: pivotlow/pivothigh only DECLARE the pivot lbR bars later, once
+    enough right-side bars exist to prove it was an extreme. So lbR is doing two
+    jobs that fight each other -- how much evidence you demand, and how late you
+    act. Frozen at one number it forces a permanent choice: fire at lbR=1 on a
+    pivot that may not be one and eat false positives, or wait for lbR=4 and
+    confirm after the move is gone.
+
+    Emitting the evidence instead of thresholding it lets the search price that
+    tradeoff per bar, which is the difference between a gate and a dial. A pivot
+    with one bar of confirmation still contributes -- it just contributes little,
+    so it can clear the entry threshold when other factors agree and cannot when
+    it is alone. Earliness becomes a confluence decision rather than a global
+    constant nobody revisits.
+
+    A candidate beaten on the right falls to 0 by itself; no special case, the
+    evidence simply stops supporting it. On BTC 1d the volumedn peak of
+    2025-04-22 ramps 1..6 over the following week and collapses to 0 on 04-29
+    when volumedn prints straight through it. It was never a pivot.
+
+    Do NOT reach for sign=-1 to mean "prefer early": 0 means no candidate, not
+    maximum earliness, and inverting makes empty bars score highest. Earliness
+    is expressed by the WEIGHT and the entry threshold, not by the sign.
+
+    {"op":"pivot_confirm","src":"volumedn","side":"high","lbL":6,"cap":6}
+    """
+    s = _series(sig, p["src"], "src")
+    side = p.get("side", "high")
+    if side not in ("high", "low"):
+        raise FactorError(f"'side' must be 'high' or 'low', got {side!r}")
+    lbL = max(1, int(_num(p, "lbL", 6)))
+    cap = max(1, int(_num(p, "cap", 6)))
+
+    out = pd.Series(0.0, index=s.index)
+    # Walk k downwards so the SMALLEST surviving k wins: the freshest candidate
+    # is the one being judged, not some older pivot still technically unbeaten.
+    for k in range(cap, 0, -1):
+        centre = s.shift(k)                       # the bar under judgement
+        left = s.shift(k + 1).rolling(lbL, min_periods=lbL)
+        right = s.rolling(k, min_periods=k)       # exactly the k bars after it
+        if side == "high":
+            ok = (centre > left.max()) & (centre > right.max())
+        else:
+            ok = (centre < left.min()) & (centre < right.min())
+        out = out.where(~ok.fillna(False), float(k))
+    return (out / cap).clip(0.0, 1.0)
+
+
 def _op_column(sig, p):
     """Pass a signal column straight through (booleans -> 0/1). The escape
     hatch for anything already computed in the signal layer."""
@@ -168,6 +221,7 @@ OPS = {
     "stall": _op_stall,
     "hh_hl": _op_hh_hl,
     "fails_to_break": _op_fails_to_break,
+    "pivot_confirm": _op_pivot_confirm,
     "column": _op_column,
 }
 REQUIRED = {
@@ -175,6 +229,7 @@ REQUIRED = {
     "cross_up": ("a", "b"), "cross_down": ("a", "b"),
     "dist_above": ("src", "ref"), "prox": ("src", "ref"),
     "stall": ("src",), "hh_hl": (), "fails_to_break": ("ref",),
+    "pivot_confirm": ("src",),
     "column": ("src",),
 }
 
