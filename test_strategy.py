@@ -27,7 +27,12 @@ Options (defaults in brackets):
     --gate=COL@IV   cross-timeframe trend gate: entries only allowed when
                     column COL was True on the PREVIOUS bar of interval IV
                     (e.g. --gate=minervini@1d with --interval=1h trades
-                    hourly only inside a daily stage-2 uptrend) [none]
+                    hourly only inside a daily stage-2 uptrend).
+                    [minervini@1d] -- ON BY DEFAULT, pass --gate=none to
+                    trade ungated. This said [none] while the code defaulted
+                    to minervini@1d, so every run carried a daily trend gate
+                    nobody asked for: on heavy_buy 1d/12mo it is the
+                    difference between n=4990 (ungated) and n=3017.
     --cost-bps=F    round-trip cost haircut in basis points applied to
                     every trade (spread+slippage; 10 = 0.10%) [0]
 
@@ -378,7 +383,11 @@ def main():
     if not frames:
         fail(f"no usable {interval} data for the requested symbols")
 
+    req_filter = filter_col          # what was ASKED for; filter_col is about
+                                     # to become an internal column name
     if gates:
+        # apply_gates ANDs filter_col into xtf_gate, so the request is honoured
+        # -- but the name it is honoured under is no longer the user's.
         frames = apply_gates(frames, gates, filter_col)
         filter_col = "xtf_gate"
         if not frames:
@@ -389,9 +398,18 @@ def main():
                              weights=weights, take_profit=target)
     wtxt = ("+".join(f"{c}x{weights.get(c, 1)}" for c in entry_cols)
             if weights else "+".join(entry_cols))
-    ftxt = gate_arg if gates else (filter_col or "none")
+    # Report BOTH, always, under their own names, and report the filter the
+    # USER asked for -- not `xtf_gate`, the internal column apply_gates ANDs it
+    # into. This printed `filter=<gate_arg> if gates else <filter_col>`: one
+    # label for two different things, and since the gate is ON BY DEFAULT an
+    # applied --filter was never shown at all. `--filter=above_50ma` cut
+    # heavy_buy from 3017 to 2319 trades while the header still read
+    # `filter=minervini@1d`. Both were applied; one was invisible. A
+    # backtester that misreports what it applied is the same failure as one
+    # that reports trades which never fired.
     lines = [f"strategy: {wtxt} (score>={min_count} in {window} "
-             f"bars)  filter={ftxt}  "
+             f"bars)  gate={gate_arg if gates else 'none'}  "
+             f"filter={req_filter or 'none'}  "
              f"exit={'+'.join(exit_cols) or 'none'}  stop={stop:.0%}  "
              f"hold={hold}  interval={interval}  universe={len(frames)}"
              + (f"  target={target:.0%}" if target else "")
