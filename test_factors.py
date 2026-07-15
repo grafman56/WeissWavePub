@@ -9,13 +9,14 @@ Two properties matter more than the arithmetic:
      moment anyone but the author can supply one.
 """
 
+import inspect
 import unittest
 
 import numpy as np
 import pandas as pd
 
-from weisswave.factors import (OPS, FactorError, compile_factor, custom_names,
-                               validate_spec)
+from weisswave.factors import (OPS, FactorError, _op_churn, compile_factor,
+                               custom_names, validate_spec)
 
 
 def frame(n=200, seed=0):
@@ -41,6 +42,7 @@ DEFS = {
                    "scale": 0.02},
     "prox": {"op": "prox", "src": "Close", "ref": "ema200", "band": 0.05},
     "stall": {"op": "stall", "src": "Close", "bars": 5, "scale": 0.02},
+    "churn": {"op": "churn", "src": "Close", "bars": 20},
     "hh_hl": {"op": "hh_hl", "bars": 10},
     "fails_to_break": {"op": "fails_to_break", "src": "Low", "ref": "ema200",
                        "bars": 3},
@@ -240,6 +242,98 @@ class TestPivotConfirm(unittest.TestCase):
             self.assertTrue(np.allclose(hits, lbR / 6, atol=1e-9),
                             f"lbR={lbR}: weighted op disagrees with the "
                             f"verified pine pivot")
+
+
+class TestChurn(unittest.TestCase):
+    """`churn` = 1 - |net| / path. The quantity behind Paul's "builds before
+    moves". Every case here is one the op has to get right to be worth having.
+    """
+
+    N = 20
+
+    def f(self, vals):
+        idx = pd.date_range("2024-01-01", periods=len(vals))
+        return pd.DataFrame({"Close": np.asarray(vals, float)}, index=idx)
+
+    def churn(self, vals, bars=None, **kw):
+        d = {"op": "churn", "src": "Close", "bars": bars or self.N, **kw}
+        return compile_factor(self.f(vals), "x", d)[-1]
+
+    def stall(self, vals, bars=None):
+        return compile_factor(self.f(vals), "x",
+                              {"op": "stall", "src": "Close",
+                               "bars": bars or self.N, "scale": 0.02})[-1]
+
+    # the whole reason this op exists ------------------------------------------
+    def test_separates_dead_from_churning_where_stall_cannot(self):
+        """THE point. Both series have ZERO net displacement over `bars`, so
+        `stall` scores them identically -- but one never moved and the other
+        travelled 58 price units to get back. Opposite situations."""
+        n = 61
+        dead = np.full(n, 100.0)
+        # periodic over exactly `N` bars => net displacement is 0 BY CONSTRUCTION
+        churned = 100 + 5 * np.sin(2 * np.pi * np.arange(n) / self.N * 3)
+
+        self.assertAlmostEqual(self.stall(dead), self.stall(churned), places=6,
+                               msg="premise broken: stall must be blind here")
+        self.assertLess(self.churn(dead), 0.01, "a series that never moved has "
+                                                "no wasted motion -- not a build")
+        self.assertGreater(self.churn(churned), 0.9, "travelled and returned = "
+                                                     "maximum churn")
+
+    def test_straight_line_is_zero(self):
+        """Every step went somewhere: no waste, no build."""
+        self.assertAlmostEqual(self.churn(np.linspace(100, 130, 61)), 0.0,
+                               places=6)
+
+    def test_bounded_and_signed_by_the_spec_not_the_op(self):
+        rng = np.random.default_rng(0)
+        v = 100 + np.cumsum(rng.normal(0, 1, 300))
+        self.assertTrue(0.0 <= self.churn(v) <= 1.0)
+        neg = compile_factor(self.f(v), "x", {"op": "churn", "src": "Close",
+                                              "bars": self.N, "sign": -1})[-1]
+        self.assertAlmostEqual(neg, -self.churn(v), places=9,
+                               msg="sign belongs to compile_factor, not the op")
+
+    # bars is the search axis, not a setting -----------------------------------
+    def test_bars_actually_moves_the_number(self):
+        """`bars` is THE parameter -- Paul's builds span 8 to 89 bars. A knob
+        that does not move the number is the bug shape this repo is full of."""
+        rng = np.random.default_rng(1)
+        v = 100 + np.cumsum(rng.normal(0, 1, 400))
+        got = {n: self.churn(v, bars=n) for n in (8, 20, 44, 89)}
+        self.assertEqual(len(set(np.round(list(got.values()), 6))), len(got),
+                         f"bars did not change the result: {got}")
+
+    def test_no_frozen_lookback_constant(self):
+        """RNG_LOOK=20 and DIV_LOOK=5 are module literals nothing can reach, and
+        they keep biting. `churn` must never grow one: bars comes from the spec.
+        """
+        src = inspect.getsource(_op_churn)
+        self.assertIn('_num(p, "bars"', src, "bars must come from the spec")
+        self.assertNotIn("EFF_LOOK", src)
+        self.assertNotIn("CHURN_LOOK", src)
+
+    # the degeneracy guard -----------------------------------------------------
+    def test_min_path_guard_is_data_and_live(self):
+        """With no travel, net/path is 0/0 and the op would score a dead series
+        1.0 -- maximum build -- which is `stall`'s bug inverted."""
+        v = np.full(61, 100.0)
+        v[-1] = 100.05                      # a whisper of movement
+        loose = self.churn(v, min_path=0.0)
+        tight = self.churn(v, min_path=0.01)
+        self.assertGreater(loose, tight,
+                           "min_path must gate the degenerate case, and be data")
+
+    def test_real_build_outranks_a_real_trend(self):
+        """Synthetics can be tuned to pass. This is Paul's own shape: a churning
+        range vs a clean trend of the SAME length and SAME start price."""
+        n = 61
+        rng = np.random.default_rng(7)
+        build = 100 + np.cumsum(rng.normal(0, 2, n))
+        build = build - np.linspace(0, build[-1] - build[0], n)   # kill the drift
+        trend = np.linspace(100, 140, n)
+        self.assertGreater(self.churn(build), self.churn(trend) + 0.5)
 
 
 if __name__ == "__main__":

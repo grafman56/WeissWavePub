@@ -125,12 +125,60 @@ def _op_prox(sig, p):
 
 def _op_stall(sig, p):
     """`src` has gone nowhere over `bars`. 1 = dead flat, 0 = moved `scale`.
-    e.g. price teetering at a level instead of pushing through."""
+    e.g. price teetering at a level instead of pushing through.
+
+    NET DISPLACEMENT ONLY -- there is no path term here, and that is a real
+    limit, not an oversight to fix in place. `stall` cannot tell "price sat
+    still" (no travel, no result) from "price churned violently and came back"
+    (huge travel, no result): both are dead flat over `bars`. They are opposite
+    situations. `churn` below is the path-aware sibling; use it when the
+    distinction matters and leave this one alone when it does not.
+    """
     s = _series(sig, p["src"], "src")
     n = int(_num(p, "bars", 5))
     sc = _num(p, "scale", 0.02)
     move = (s - s.shift(n)).abs() / (s.abs() * sc + EPS)
     return (1.0 - move).clip(0.0, 1.0)
+
+
+def _op_churn(sig, p):
+    """How much of `src`'s travel over `bars` was WASTED: 1 - |net| / path.
+    0 = a straight line (every step went somewhere). 1 = travelled and ended
+    where it started.
+
+    THE QUANTITY BEHIND "BUILDS BEFORE MOVES". Paul gave five dated ranges he
+    reads as builds; measured at each range's own length, this ranks them
+    1.7th / 6.2th / 13.6th / 13.8th percentile -- and puts the one he called "a
+    different type" at 46.7th, correctly excluding it. It reproduces his own
+    strong/weak/different labels without being told them.
+
+    IT IS THE RATIO, NOT THE VOLUME. Relative volume on those builds is 44th-
+    57th percentile, i.e. ordinary. The effort/result read is right but it is
+    driven entirely by the denominator collapsing (no result), not by extra
+    effort. And it is not raw wasted travel either: that scales with the window
+    and ranks the excluded example highest. Only the ratio separates them.
+
+    `bars` IS THE WHOLE POINT AND MUST STAY DATA. Paul's builds run 8, 15, 44,
+    64 and 89 bars -- an 11x spread. At a fixed 20 the same examples read
+    85th/64th/93rd percentile, which is noise. The window is a SEARCH OVER
+    SCALES, the same way his fib anchors are ("I usually try several different
+    past swings to find what works"). A frozen default here would rebuild
+    RNG_LOOK=20, which is the exact class of constant that keeps biting.
+
+    `min_path` is a degeneracy guard, not a threshold on the idea: with no
+    travel there is no wasted motion to measure and net/path is 0/0. A series
+    that never moved would otherwise score 1.0 -- maximum build -- which is the
+    same "dead vs coiling" confusion `stall` has, inverted.
+
+    {"op":"churn","src":"Close","bars":20}
+    """
+    s = _series(sig, p["src"], "src")
+    n = max(1, int(_num(p, "bars", 20)))
+    base = s.shift(n).abs()
+    net = (s - s.shift(n)).abs() / (base + EPS)
+    path = s.diff().abs().rolling(n, min_periods=n).sum() / (base + EPS)
+    v = (1.0 - net / (path + EPS)).clip(0.0, 1.0)
+    return v.where(path > _num(p, "min_path", 0.01), 0.0)
 
 
 def _op_hh_hl(sig, p):
@@ -219,6 +267,7 @@ OPS = {
     "dist_above": _op_dist_above,
     "prox": _op_prox,
     "stall": _op_stall,
+    "churn": _op_churn,
     "hh_hl": _op_hh_hl,
     "fails_to_break": _op_fails_to_break,
     "pivot_confirm": _op_pivot_confirm,
@@ -228,7 +277,8 @@ REQUIRED = {
     "falling": ("src",), "rising": ("src",),
     "cross_up": ("a", "b"), "cross_down": ("a", "b"),
     "dist_above": ("src", "ref"), "prox": ("src", "ref"),
-    "stall": ("src",), "hh_hl": (), "fails_to_break": ("ref",),
+    "stall": ("src",), "churn": ("src",),
+    "hh_hl": (), "fails_to_break": ("ref",),
     "pivot_confirm": ("src",),
     "column": ("src",),
 }

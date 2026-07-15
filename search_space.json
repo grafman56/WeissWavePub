@@ -74,6 +74,12 @@
       "sign": -1,
       "_doc": "Price going nowhere. sign -1 because teetering instead of pushing argues AGAINST a long -- the reversal read at a fib level."
     },
+    "build": {
+      "op": "churn",
+      "src": "Close",
+      "bars": 20,
+      "_doc": "PAUL'S 'BUILDS BEFORE MOVES', as a number. 1 - |net move| / total path travelled: 0 = a straight line, 1 = price travelled hard and ended where it started. Distinct from `stalling`, which has NO PATH TERM and therefore scores 'sat still' and 'churned and came back' identically (both 1.0) -- opposite situations, and Paul trades the second. IT IS THE RATIO, NOT THE VOLUME: relative volume on his builds is 44th-57th percentile, i.e. ordinary. The effort/result read is right but the DENOMINATOR collapses; there is no extra effort. Raw wasted travel does not work either -- it scales with the window and ranks his excluded example highest. Only the ratio separates them. *** `bars` IS THE SEARCH AXIS, NOT A SETTING. *** 20 is a STARTING POINT ONLY. Paul's five labelled builds run 8, 15, 44, 64 and 89 bars -- an 11x spread -- and at a fixed 20 they read 85th/64th/93rd percentile, which is noise. At native length they read 98th/94th/87th/86th, and the one he called 'a different type' correctly falls to 54th. Sweep it (--set=factors.build.bars=N; one grid per value). Leaving it at 20 rebuilds RNG_LOOK and throws the finding away. sign is +1 and left FOR THE SEARCH: whether churn is bullish (accumulation before the break) or bearish is the question, not the assumption -- `stalling` ships sign:-1 and has already answered it the other way, from a literal."
+    },
     "_doc_indicators": [
       "INDICATOR COMBINATIONS ARE NOW SEARCHED, not chosen. Each indicator below is its own weighted factor, so WHICH COMBINATION fires is decided by WHICH WEIGHTS ARE NON-ZERO -- w=0 means that indicator is out of the strategy. The search discovers 'tdi_long + adp_bull_div' instead of being handed it in bot_strategies.json, and conf_threshold decides how many must agree.",
       "This is 'weights not gates' taken all the way down. It is also cheap: every factor precomputes into ONE grid and the weights sweep at sim time.",

@@ -6,6 +6,7 @@ so the number is the indicator's own and nothing else's.
 
     python combo_smoke.py                        # TSLA 1d, last 12mo
     python combo_smoke.py --symbols=TSLA,NVDA --months=24 --interval=1d
+    python combo_smoke.py --stop=0.05 --target=0.2 --window=10
 
 WHY ONE PROCESS AND NOT 406 CLI CALLS: the slow part is building the signal
 frame; the backtest itself is milliseconds. Build once, evaluate 406 times --
@@ -36,11 +37,15 @@ from weisswave.db import connect, load_prices
 from weisswave.optimize import evaluate_config
 from weisswave.signals import SIGNAL_COLUMNS_BULL, build_signals
 
-# test_strategy's defaults, so a row here is comparable to a row there.
-STOP = 0.10
-TARGET = 0.10
-WINDOW = 5
-HOLD = None          # no clock. Never a time exit.
+# test_strategy's defaults, so a row here is comparable to a row there. They are
+# DEFAULTS, not constants: every one is a flag. This file shipped them as module
+# literals for about an hour, which is the exact thing RNG_LOOK=20 and
+# SIGNAL_NORM=3.0 are on the backlog for. A constant that encodes a tradeoff is
+# a decision nobody can revisit.
+DEF_STOP = 0.10
+DEF_TARGET = 0.10
+DEF_WINDOW = 5
+HOLD = None          # no clock, and NOT a flag: hold=0 is permanent (see CLAUDE.md)
 
 
 def stats(tr):
@@ -57,6 +62,9 @@ def main():
     syms = arg(args, "symbols", "TSLA").split(",")
     interval = arg(args, "interval", "1d")
     months = int(arg(args, "months", "12"))
+    STOP = float(arg(args, "stop", str(DEF_STOP)))
+    TARGET = float(arg(args, "target", str(DEF_TARGET)))
+    WINDOW = int(arg(args, "window", str(DEF_WINDOW)))
     cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
               if months else None)
 
