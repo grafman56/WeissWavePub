@@ -27,7 +27,7 @@ from weisswave.codesig import package_sig
 from test_strategy import (GATE_DUR, apply_gates, arg, emit, fail,
                            load_universe)
 from weisswave import portsim
-from weisswave.db import DB_PATH
+from weisswave.db import DB_PATH, connect, list_symbols
 from search_space import load_space
 from weisswave import factors as factor_mod
 from weisswave.factors import (FactorError, compile_factor, custom_names,
@@ -420,6 +420,42 @@ def attach_fib_anchor(frames, anchor, fib_left, fib_right,
     return frames
 
 
+def _require_gated(frames, n_before, gates, universe):
+    """A gate that drops EVERY symbol is a configuration error, not a result.
+
+    apply_gates drops a symbol outright when the gate's interval has no data for
+    it -- correct (you cannot confirm a trend you cannot see), but silent. The
+    default gate here is minervini@1d,above_50ma@4h and CRYPTO HAS NO 4h DATA,
+    so `--universe=crypto` with the defaults dropped all 12 symbols, built an
+    empty grid, and died 250 lines later on
+    `IndexError: index -1 is out of bounds for axis 0 with size 0` while
+    computing years from an empty equity curve. A documented gotcha
+    ("crypto runs need --gate=minervini@1d") that presented as a traceback.
+
+    test_strategy already fails cleanly here; this is the same check.
+    """
+    if frames:
+        return
+    # Name the interval that is ACTUALLY missing. A symbol is dropped if it
+    # lacks ANY gate interval, so listing them all reads as "1d is missing too"
+    # when 1d is fine -- the same not-quite-true message this guard exists to
+    # replace.
+    con = connect(read_only=True)
+    have = {iv: set(list_symbols(con, iv)) for _, iv in gates}
+    con.close()
+    lines = []
+    for iv, syms in sorted(have.items()):
+        lines.append(f"    {iv}: {len(syms)} symbols in the DB")
+    missing = [iv for iv, syms in have.items() if not syms]
+    fail(f"the gate dropped all {n_before} symbols in universe={universe} -- "
+         f"a symbol needs data on EVERY gate interval.\n"
+         f"  gate = {','.join(f'{c}@{iv}' for c, iv in gates)}\n"
+         + "\n".join(lines)
+         + (f"\n  no data at all for: {', '.join(missing)}" if missing else "")
+         + f"\n  crypto only has 15m and 1d -- use --gate=minervini@1d, or "
+           f"--gate=none.")
+
+
 def select_universe(frames, universe):
     """Keep only the requested symbols (crypto and stocks live in one table).
     universe: 'stocks' (default; excludes crypto -USD pairs), 'crypto' (only
@@ -472,8 +508,12 @@ def prepare_grid(strategies, interval="15m",
         cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
     frames = select_universe(load_universe(interval, cutoff, sig_params),
                              universe)
+    if not frames:
+        fail(f"no {interval} symbols in universe={universe}")
     if gates:
+        n_before = len(frames)
         frames = apply_gates(frames, gates, None)
+        _require_gated(frames, n_before, gates, universe)
     frames = _apply_market(frames, market)
     frames = attach_htf(frames, sig_params)
     frames = attach_fib_anchor(frames, fib_anchor, fib["left"], fib["right"],
@@ -689,10 +729,14 @@ def main():
     market = arg(args, "market", "sma100")      # market-regime filter; none to disable
     cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
               if months else None)
-    frames = select_universe(load_universe(interval, cutoff),
-                             arg(args, "universe", "stocks"))
+    universe_arg = arg(args, "universe", "stocks")
+    frames = select_universe(load_universe(interval, cutoff), universe_arg)
+    if not frames:
+        fail(f"no {interval} symbols in universe={universe_arg}")
     if gates:
+        n_before = len(frames)
         frames = apply_gates(frames, gates, None)
+        _require_gated(frames, n_before, gates, universe_arg)
 
     # ── Market-regime filter: when the broad market is in a downtrend, the
     #    bot trades NOTHING (no new entries anywhere) — it waits in cash for
