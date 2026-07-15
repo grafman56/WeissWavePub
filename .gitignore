@@ -28,3 +28,8 @@ venv/
 .opencode/_prompt.txt
 agent-tasks/
 .opencode/_task*.txt
+
+# ── Working notes: local-only ─────────────────────────────────────────────
+# Session rules and the open-decision list. Neither has ever been tracked.
+CLAUDE.md
+BACKLOG.md
