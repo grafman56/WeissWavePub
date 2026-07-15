@@ -548,8 +548,19 @@ def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                      fib_anchor="1d", sig_params=None):
     """A file path uniquely determined by every input build_grid consumes.
     Same key <-> byte-identical grid, so a cache hit is always trustworthy.
-    db_mtime is in the filename (not just the hash) so stale-data grids are
-    prunable when the DB is refreshed."""
+
+    db_mtime AND the code signature are in the FILENAME, not just the hash, so
+    grids invalidated by newer data or newer code are identifiable by name and
+    therefore prunable. The hash alone cannot do this: it is one-way, so a grid
+    built by dead code is indistinguishable from a live one you have not
+    requested yet, and the only safe move is to keep it forever.
+
+    That is not hypothetical -- it is why 33 files / 1.55GB were sitting in
+    grid_cache. The minervini -> sma50_over_200 rename (8f67b7f) changed
+    package_sig, which invalidated every grid, and nothing could tell which.
+    db_mtime was already in the name for exactly this reason; the code
+    signature had the same job and was not given the same treatment."""
+    code_sig = package_sig("signals", "factors", "structure")
     payload = json.dumps({
         "strategies": strategies,      # full defs: entry/exit cols, window...
         "interval": interval, "gate": gate_arg, "market": market,
@@ -574,11 +585,34 @@ def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
         # would rebuild 5GB of grids on every edit to the module people edit
         # most; the tradeoff is deliberate, so a build_grid fix still needs the
         # GRID_SCHEMA_VERSION bump below.
-        "code": package_sig("signals", "factors", "structure"),
+        "code": code_sig,
     }, sort_keys=True, default=str)
     h = hashlib.sha1(payload.encode()).hexdigest()[:16]
-    return os.path.join(GRID_CACHE_DIR,
-                        f"grid_{interval.replace(':', '')}_{db_mtime}_{h}.npz")
+    return os.path.join(
+        GRID_CACHE_DIR,
+        f"grid_{interval.replace(':', '')}_{db_mtime}_{code_sig}_{h}.npz")
+
+
+def stale_grid_paths(key, interval):
+    """Grid caches to delete after writing `key`: those built against older DATA
+    or older CODE. Siblings differing only by the trailing hash are KEPT.
+
+    That last sentence is the whole design. Two grids with the same interval,
+    db_mtime and code_sig but different hashes are BOTH VALID -- they are just
+    different gates, universes or fib anchors. Deleting them would make a
+    crypto run and a stocks run each nuke the other's multi-GB grid and pay a
+    full rebuild on every alternation.
+
+    This is the same prefix trick as test_strategy.stale_cache_paths, and that
+    is deliberate: ONE RULE, NOT TWO. That function's own docstring already
+    claimed "_grid_cache_path's prune already had this right" -- it did not,
+    because no such prune existed. The claim was true about the path SCHEME and
+    false about the pruning, and the gap cost 1.55GB.
+    """
+    keep = os.path.basename(key).rsplit("_", 1)[0]   # drop the hash token
+    return [p for p in glob.glob(os.path.join(
+                GRID_CACHE_DIR, f"grid_{interval.replace(':', '')}_*.npz"))
+            if not os.path.basename(p).startswith(keep)]
 
 
 def _save_grid(path, g):
@@ -625,12 +659,12 @@ def prepare_grid_cached(strategies, interval="15m",
         universe=universe, gate_mode=gate_mode, fib_anchor=fib_anchor,
         sig_params=sig_params)
     _save_grid(path, grid)
-    # drop grids built against older DB data for this interval
-    mtoken = os.path.basename(path).rsplit("_", 1)[0]  # grid_<int>_<mtime>
-    for old in glob.glob(os.path.join(
-            GRID_CACHE_DIR, f"grid_{interval.replace(':', '')}_*.npz")):
-        if not os.path.basename(old).startswith(mtoken):
-            os.remove(old)
+    # Drop grids built against older DB data OR older code. This was an inline
+    # copy of the prefix rule; it is now the one function, because the inline
+    # version silently only pruned on db_mtime -- the code signature was not in
+    # the filename for it to compare.
+    for old in stale_grid_paths(path, interval):
+        os.remove(old)
     return grid, False
 
 

@@ -186,6 +186,65 @@ check("real grid graph reaches factors and structure",
 check("grid cache key actually carries the code signature",
       '"code"' in inspect.getsource(pm._grid_cache_path))
 
+# ...and carries it IN THE FILENAME, not only inside the hash. A hash is
+# one-way: a grid built by dead code is indistinguishable from a live one you
+# have not requested yet, so the only safe move is to keep it forever. That is
+# how 33 files / 1.55GB accumulated after the minervini rename changed
+# package_sig and invalidated every grid with nothing to identify them by.
+# db_mtime was already in the name for exactly this reason.
+_cur_code = codesig.package_sig("signals", "factors", "structure")
+_p = os.path.basename(pm._grid_cache_path(**base))
+check("code signature is a FILENAME token, not just a hash input",
+      _cur_code in _p, _p)
+check("db_mtime is still a filename token", "_111_" in _p, _p)
+
+
+# 3b. grid-cache pruning ------------------------------------------------------
+# The rule must drop data-stale and code-stale grids while KEEPING siblings that
+# differ only by the hash -- those are different gates/universes/anchors and are
+# every bit as valid. Deleting them is the bug stale_cache_paths already had:
+# a crypto run and a stocks run each nuking the other's multi-GB grid and paying
+# a full rebuild on every alternation.
+def _grid_prune(current, present):
+    real_glob = pm.glob.glob
+    pm.glob.glob = lambda _pat: [os.path.join(pm.GRID_CACHE_DIR, p)
+                                 for p in present]
+    try:
+        return sorted(os.path.basename(p)
+                      for p in pm.stale_grid_paths(
+                          os.path.join(pm.GRID_CACHE_DIR, current), "15m"))
+    finally:
+        pm.glob.glob = real_glob
+
+
+CUR_G = "grid_15m_1784052866_61ac34d4_aaaaaaaaaaaaaaaa.npz"
+SIB_G = "grid_15m_1784052866_61ac34d4_bbbbbbbbbbbbbbbb.npz"  # other gate/universe
+OLDDATA_G = "grid_15m_1700000000_61ac34d4_aaaaaaaaaaaaaaaa.npz"
+OLDCODE_G = "grid_15m_1784052866_73a5e0ee_aaaaaaaaaaaaaaaa.npz"   # pre-rename
+LEGACY_G = "grid_15m_1784052866_aaaaaaaaaaaaaaaa.npz"             # pre-codesig name
+
+check("a hash SIBLING is KEPT (different gate/universe, equally valid)",
+      SIB_G not in _grid_prune(CUR_G, [CUR_G, SIB_G]),
+      detail=str(_grid_prune(CUR_G, [CUR_G, SIB_G])))
+check("the grid just written is KEPT", CUR_G not in _grid_prune(CUR_G, [CUR_G]))
+check("a grid built on older DATA is dropped",
+      OLDDATA_G in _grid_prune(CUR_G, [CUR_G, OLDDATA_G]))
+check("a grid built by older CODE is dropped (the 1.55GB leak)",
+      OLDCODE_G in _grid_prune(CUR_G, [CUR_G, OLDCODE_G]))
+check("the pre-codesig legacy name is dropped",
+      LEGACY_G in _grid_prune(CUR_G, [CUR_G, LEGACY_G]))
+check("alternating crypto/stocks runs prune NOTHING",
+      _grid_prune(CUR_G, [CUR_G, SIB_G]) == []
+      and _grid_prune(SIB_G, [CUR_G, SIB_G]) == [],
+      detail=f"{_grid_prune(CUR_G, [CUR_G, SIB_G])} / "
+             f"{_grid_prune(SIB_G, [CUR_G, SIB_G])}")
+
+# one rule, not two: the inline copy in prepare_grid_cached only ever compared
+# db_mtime, which is why code-stale grids survived forever
+check("prepare_grid_cached uses stale_grid_paths, not a private copy",
+      "stale_grid_paths(" in inspect.getsource(pm.prepare_grid_cached)
+      and "mtoken" not in inspect.getsource(pm.prepare_grid_cached))
+
 
 # 4. signals-cache pruning ----------------------------------------------------
 # This decides which 360MB files get DELETED. It used to remove every cache but
