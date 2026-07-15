@@ -28,7 +28,8 @@ OPP_UP_CAP = 20     # max opposition count inside a down wave
 OPP_DOWN_CAP = -23  # max (most negative) opposition count inside an up wave
 
 
-def weis_wave(df: pd.DataFrame, pullback: int = 2) -> pd.DataFrame:
+def weis_wave(df: pd.DataFrame, pullback: int = 2,
+              pullback1: int = None) -> pd.DataFrame:
     """Compute wave direction, opposition counter, and cumulative wave
     volumes. Returns a DataFrame indexed like df with columns:
 
@@ -37,8 +38,32 @@ def weis_wave(df: pd.DataFrame, pullback: int = 2) -> pd.DataFrame:
     opp         : opposition counter (see module docstring)
     volumeup    : cumulative up-wave volume, seeded by prior counter-volume
     volumedn    : cumulative down-wave volume, seeded likewise
+    volumeup1 / volumedn1 : the SECOND wave engine (below)
     up_continue / down_continue / up_switch / down_switch : wave state flags
+
+    THE SECOND ENGINE. "Combined v1 Prod" runs the wave block TWICE:
+
+        pullback  = input(2, "TDL for Wave")              -> wave  / volumeup
+        pullback1 = input(2, "TDL for buy/sell pressure") -> wave1 / volumeup1
+
+    and `crossup = crossover(volumeup1, volumedn1)` -- which feeds `golden` --
+    uses the SECOND. Two details make it a hybrid rather than a clean copy, and
+    both are reproduced here because the chart is the reference:
+
+      * `tvolup`/`tvoldown` (the counter-volume that seeds a new wave) come
+        from the FIRST engine's opp/wave -- the Pine never duplicates them.
+      * `volumeup1` accumulates from `nz(volumeup[1])`, i.e. the FIRST
+        engine's series, not its own previous value.
+
+    CONSEQUENCE, VERIFIED: at pullback1 == pullback the two engines are
+    byte-identical (same `trend`, same `isTrending` => wave1 == wave on every
+    bar, and the accumulation branch is literally the same expression). They
+    only diverge when the pullbacks differ -- which is exactly why pullback1
+    needs to exist here: it is a TUNING dimension ("what if buy/sell pressure
+    flipped more eagerly than the wave?"), not a bug fix.
     """
+    if pullback1 is None:
+        pullback1 = pullback
     close = df["Close"].to_numpy(dtype=float)
     volume = df["Volume"].to_numpy(dtype=float)
     n = len(close)
@@ -47,6 +72,8 @@ def weis_wave(df: pd.DataFrame, pullback: int = 2) -> pd.DataFrame:
     mov = np.sign(np.diff(close, prepend=close[:1])).astype(int)
     is_trending = (rising(df["Close"], pullback) | falling(df["Close"], pullback)) \
         .fillna(False).to_numpy()
+    is_trending1 = (rising(df["Close"], pullback1)
+                    | falling(df["Close"], pullback1)).fillna(False).to_numpy()
 
     trend = np.zeros(n, dtype=int)
     wave = np.zeros(n, dtype=int)
@@ -56,6 +83,23 @@ def weis_wave(df: pd.DataFrame, pullback: int = 2) -> pd.DataFrame:
     tempvoldown = np.zeros(n)
     volumeup = np.zeros(n)
     volumedn = np.zeros(n)
+    wave1 = np.zeros(n, dtype=int)          # the buy/sell-pressure engine
+    opp1 = np.zeros(n, dtype=int)
+    volumeup1 = np.zeros(n)
+    volumedn1 = np.zeros(n)
+
+    def _opp_next(cur_wave, k, i):
+        """The Pine's ~46-branch opp ladder, shared by both engines."""
+        if cur_wave == -1 and 0 <= k < OPP_UP_CAP and i - (k + 1) >= 0 \
+                and close[i] > close[i - (k + 1)]:
+            return k + 1
+        if cur_wave == 1:
+            if OPP_DOWN_CAP < k <= -1 and i - (-k + 1) >= 0 \
+                    and close[i] < close[i - (-k + 1)]:
+                return k - 1
+            if i > 0 and close[i] < close[i - 1]:
+                return -1   # Pine allows restarting a down-chain any time
+        return 0
 
     for i in range(n):
         prev_trend = trend[i - 1] if i > 0 else 0
@@ -110,12 +154,39 @@ def weis_wave(df: pd.DataFrame, pullback: int = 2) -> pd.DataFrame:
         else:
             volumedn[i] = volume[i]
 
+        # ── SECOND ENGINE (buy/sell pressure), pullback1 ──────────────────
+        prev_wave1 = wave1[i - 1] if i > 0 else 0
+        wave1[i] = trend[i] if (trend[i] != prev_wave1 and is_trending1[i]) \
+            else prev_wave1
+        same1 = wave1[i] == prev_wave1
+        opp1[i] = _opp_next(wave1[i], opp1[i - 1] if i > 0 else 0, i) \
+            if (same1 and i > 0) else 0
+        # tvolup/tvoldown deliberately come from the FIRST engine (the Pine
+        # never duplicates them), and the carry-over reads volumeup[i-1] --
+        # also the first engine. Both are faithful, not oversights.
+        t1u = tempvolup[i - 1] if (not same1 and i > 0) else 0.0
+        t1d = tempvoldown[i - 1] if (not same1 and i > 0) else 0.0
+        if not same1 and t1u > 0:
+            volumeup1[i] = t1u + volume[i]
+        elif same1 and wave1[i] == 1 and i > 0:
+            volumeup1[i] = volumeup[i - 1] + volume[i]
+        else:
+            volumeup1[i] = volume[i]
+        if not same1 and t1d > 0:
+            volumedn1[i] = t1d + volume[i]
+        elif same1 and wave1[i] == -1 and i > 0:
+            volumedn1[i] = volumedn[i - 1] + volume[i]
+        else:
+            volumedn1[i] = volume[i]
+
     out = pd.DataFrame(index=df.index)
     out["wave"] = wave
     out["wave_vol"] = wave_vol
     out["opp"] = opp
     out["volumeup"] = volumeup
     out["volumedn"] = volumedn
+    out["volumeup1"] = volumeup1
+    out["volumedn1"] = volumedn1
 
     # Pine's cd/cu/su/sd simplify to these (the `(wave==wave[1] and wave==x)
     # or wave==x` construction is just `wave==x`):

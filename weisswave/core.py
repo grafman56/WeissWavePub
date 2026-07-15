@@ -31,15 +31,29 @@ def hlc3(df: pd.DataFrame) -> pd.Series:
 
 
 def rising(series: pd.Series, length: int) -> pd.Series:
-    """Pine v4 rising(): current value greater than ANY of the previous
-    `length` values."""
-    return series > series.shift(1).rolling(length).max()
+    """Pine v4 rising(): the series has been MONOTONICALLY rising for `length`
+    bars -- source > source[1] AND source[1] > source[2] AND ... `length` times.
+
+    NOT "greater than the max of the last `length` bars". That was the previous
+    implementation and it is a BREAKOUT test, not a monotonicity test: a single
+    strong up-bar after a dip passes the max test and fails Pine's.
+
+    This sits under weis_wave's `isTrending`, which decides when the wave FLIPS,
+    which decides whether volumeup/volumedn accumulate or reset -- so the wrong
+    definition silently rewrote every volume-derived signal in the stack.
+    Caught on BTC 2025-03-23: close 86,082 after 83,841 after 84,089. The max
+    test says rising (86,082 > 84,089) and flips the wave; Pine says NOT rising
+    (83,841 < 84,089 breaks the chain) and holds it. Paul's chart shows
+    volumedn at 6.1x the bar volume there -- accumulating. Pine wins.
+    """
+    up = series.diff() > 0
+    return up.rolling(length, min_periods=length).min().fillna(0).astype(bool)
 
 
 def falling(series: pd.Series, length: int) -> pd.Series:
-    """Pine v4 falling(): current value lower than ANY of the previous
-    `length` values."""
-    return series < series.shift(1).rolling(length).min()
+    """Pine v4 falling(): MONOTONICALLY falling for `length` bars. See rising()."""
+    dn = series.diff() < 0
+    return dn.rolling(length, min_periods=length).min().fillna(0).astype(bool)
 
 
 def crossover(a: pd.Series, b: pd.Series) -> pd.Series:

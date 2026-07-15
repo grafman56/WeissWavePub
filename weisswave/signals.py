@@ -33,9 +33,11 @@ def build_signals(df: pd.DataFrame,
                   ob_level: float = 60.0,
                   os_level: float = -60.0,
                   pullback: int = 2,
+                  pullback1: int = None,
                   very_heavy_mult: float = 10.0,
                   heavy_mult: float = 4.0,
-                  confirm_window: int = 3) -> pd.DataFrame:
+                  confirm_window: int = 3,
+                  combined: dict = None) -> pd.DataFrame:
     """Compute WaveTrend + Weis Wave + divergences and derive signals.
 
     All boolean columns are True on the bar the condition is first
@@ -46,7 +48,7 @@ def build_signals(df: pd.DataFrame,
     out = df[["Open", "High", "Low", "Close", "Volume"]].copy()
 
     wt = wavetrend(df, wt_channel, wt_average, wt_smooth)
-    ww = weis_wave(df, pullback)
+    ww = weis_wave(df, pullback, pullback1)
     tiers = pressure_tiers(ww["volumeup"], ww["volumedn"],
                            very_heavy_mult, heavy_mult)
     divs = fractal_divergences(wt["wt1"], df["High"], df["Low"], prefix="wt")
@@ -66,8 +68,12 @@ def build_signals(df: pd.DataFrame,
     out["wt_cross_down_overbought"] = out["wt_cross_down"] & (out["wt2"] >= ob_level)
 
     # ── Weis Wave volume dominance crosses ───────────────────────────────
-    out["volume_cross_up"] = crossover(out["volumeup"], out["volumedn"])
-    out["volume_cross_down"] = crossunder(out["volumeup"], out["volumedn"])
+    # The Pine's `crossup`/`crossdown` use the SECOND wave engine
+    # (volumeup1/volumedn1, driven by pullback1), not the first. Identical at
+    # the shipped defaults (pullback1 == pullback == 2 -- verified), so this
+    # changes nothing today; it exists so pullback1 becomes tunable.
+    out["volume_cross_up"] = crossover(out["volumeup1"], out["volumedn1"])
+    out["volume_cross_down"] = crossunder(out["volumeup1"], out["volumedn1"])
 
     # ── Example composites (mirror the Combined v1 wtbuy/wtsell idea) ────
     bull_confirm = (out["volume_cross_up"] | out["wt_bull_div"]
@@ -88,7 +94,10 @@ def build_signals(df: pd.DataFrame,
 
     # ── Combined v1 Prod signal suite (proprietary; optional) ────────────
     if combined_signals is not None:
-        out = out.join(combined_signals(df, out))
+        # `combined` carries the proprietary suite's own knobs (e.g.
+        # {"tdi": {"oversold": 45}}) so the sensitivity of the arrows -- and of
+        # `golden` -- is tunable rather than a default three calls deep.
+        out = out.join(combined_signals(df, out, **(combined or {})))
 
     # ── Regime filters (gates for entries, not entry triggers themselves) ─
     out["sma50"] = sma(df["Close"], 50)

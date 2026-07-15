@@ -82,6 +82,9 @@ def parse_job(args):
         "gate": arg(args, "gate", G["gate"]),
         "gate_mode": arg(args, "gate-mode", G["gate_mode"]),
         "fib_anchor": arg(args, "fib-anchor", G["fib_anchor"]),
+        # indicator sensitivity: a GRID dimension (rebuilds signals+grid)
+        "sig_params": {k: v for k, v in sp.get("signals", {}).items()
+                       if not k.startswith("_")},
         "interval": arg(args, "interval", G["interval"]),
         "market": arg(args, "market", G["market"]),
         "months": int(arg(args, "months", str(G["months"]))),
@@ -118,7 +121,8 @@ class Engine:
                                 job["market"], job["months"],
                                 universe=job["universe"],
                                 gate_mode=job["gate_mode"],
-                                fib_anchor=job["fib_anchor"])
+                                fib_anchor=job["fib_anchor"],
+                                sig_params=job["sig_params"])
         # HOLDOUT: reserve the last `holdout` fraction of history the search
         # NEVER sees; the walk-forward folds live entirely in the earlier train
         # region and the winners are scored on the holdout once.
@@ -132,6 +136,9 @@ class Engine:
         self.hold_bars = np.full_like(self.st_hold,
                                       int(self.SIM.get("hold_bars", 0)))
         self.ext_arr = np.asarray(self.SIM["fib_ext"])
+        # typical magnitude per factor -- the threshold sampler needs it
+        self.fscale = self.A.get("FSCALE")
+        self.fsample = self.A.get("FSAMPLE")
         self._ms_cache = {}
         if not quiet:
             g, te = self.grid, self.tr_end
@@ -143,6 +150,14 @@ class Engine:
                   f"{pd.Timestamp(g[0]).date()}->{pd.Timestamp(g[te-1]).date()}"
                   f", HELD-OUT {pd.Timestamp(g[te]).date()}->"
                   f"{pd.Timestamp(g[-1]).date()}", flush=True)
+
+    def grid_bytes(self):
+        """Bytes ONE copy of this grid occupies. Each --jobs worker holds its
+        own copy (loaded from the disk cache, not shared), so total RAM is
+        roughly jobs x this. See cap_jobs()."""
+        n = sum(v.nbytes for v in self.A.values())
+        return n + sum(x.nbytes for x in (self.V, self.ENT, self.SIDX,
+                                          self.EXT))
 
     def _cagr(self, res, yrs):
         return (pd.Series(res["equity"]).iloc[-1]
@@ -246,6 +261,31 @@ class Engine:
                 "ntr": int(sum(nt for _, _, nt in out))}
 
 
+def cap_jobs(jobs, eng, budget_gb=12.0):
+    """Cap --jobs so the workers cannot eat the machine.
+
+    THIS EXISTS BECAUSE I FROZE PAUL'S PC. Every worker holds its OWN copy of
+    the grid (loaded from disk cache, not shared memory), so RAM is jobs x
+    grid_bytes. On a 12-symbol crypto grid that is ~0.1 GB and irrelevant; on a
+    ~500-symbol stocks grid it is ~4.6 GB, and --jobs=8 asks for ~37 GB. The
+    machine does not refuse -- it thrashes and dies.
+
+    Worse, the factor DSL makes this grow: every JSON factor adds T x S x 8
+    bytes to every worker. Expressiveness has a RAM price and it is paid per
+    process. Refuse loudly instead of discovering it the hard way."""
+    if jobs <= 1:
+        return jobs
+    per = eng.grid_bytes()
+    fit = max(1, int((budget_gb * 1e9) // max(per, 1)))
+    if fit < jobs:
+        print(f"WARNING: --jobs={jobs} x {per/1e9:.1f} GB/worker = "
+              f"{jobs*per/1e9:.1f} GB, over the {budget_gb:.0f} GB budget. "
+              f"Capping to --jobs={fit}. (Raise with --mem-budget-gb, or use "
+              f"fewer symbols / a shorter window.)", flush=True)
+        return fit
+    return jobs
+
+
 # ---- process pool: each worker builds its OWN Engine, once -------------------
 _W = {}
 
@@ -300,7 +340,8 @@ def evolve(eng, sp, folds, seed, iters, gens, elite, min_trades,
                 done.append(apply(c, s))
         return done
 
-    pop = score_batch([sample_cfg(r, sp, K, HTF_START) for _ in range(iters)])
+    pop = score_batch([sample_cfg(r, sp, K, HTF_START, eng.fscale, eng.fsample)
+                       for _ in range(iters)])
     n = len(pop)
     for g in range(gens):                            # evolution (sequential)
         pop.sort(key=lambda c: c["_fit"], reverse=True)
@@ -338,7 +379,7 @@ def main():
     # stocks config with the same gate/market/months.
     gsig = grid_sig_of(job["interval"], job["gate"], job["market"],
                        job["months"], job["universe"], job["gate_mode"],
-                       job["fib_anchor"])
+                       job["fib_anchor"], job["sig_params"])
     prior = load_results()
     seen = {}
     if len(prior) and {"cfg_sig", "grid_sig", "wf_fit"} <= set(prior.columns):
@@ -362,12 +403,13 @@ def main():
             seen[row["cfg_sig"]] = {"exc": row["wf_exc"], "min": row["wf_min"],
                                     "pos": pos, "ntr": ntr,
                                     "ms": row.get("wf_ms_exc", np.nan)}
-    jobs = max(1, job["jobs"])
+    jobs = cap_jobs(max(1, job["jobs"]), eng,
+                    float(arg(args, "mem-budget-gb", "12")))
     pool = None
     if jobs > 1:
         pool = mp.Pool(jobs, initializer=_worker_init, initargs=(args,))
         print(f"fanning configs across {jobs} worker processes "
-              f"(each holds its own grid copy)", flush=True)
+              f"({eng.grid_bytes()/1e9:.1f} GB grid each)", flush=True)
 
     t1 = time.time()
     pop, n, n_reused = evolve(eng, sp, eng.folds, job["seed"], iters, gens,
@@ -408,7 +450,8 @@ def main():
     meta = {"interval": job["interval"], "gate": job["gate"],
             "market": job["market"], "months": job["months"],
             "universe": job["universe"], "gate_mode": job["gate_mode"],
-            "fib_anchor": job["fib_anchor"], "wf": True, "oos": False}
+            "fib_anchor": job["fib_anchor"],
+            "sig_params": job["sig_params"], "wf": True, "oos": False}
     save_results(df, meta, {"search": "agent_search",
                             "universe": job["universe"], "iters": iters,
                             "gens": gens, "holdout": job["holdout"],

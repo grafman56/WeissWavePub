@@ -67,7 +67,7 @@ RESULTS_DIR = "sweep_results"
 
 
 def grid_sig_of(interval, gate, market, months, universe="stocks",
-                gate_mode="hard", fib_anchor="1d"):
+                gate_mode="hard", fib_anchor="1d", sig_params=None):
     """Signature of the DATA + SEMANTICS a score was computed under. Two rows
     may only be compared (or deduped) when these match.
 
@@ -75,8 +75,9 @@ def grid_sig_of(interval, gate, market, months, universe="stocks",
     stocks config, and a score from a hard-gated grid means nothing for a
     gate-as-factor one. Both were previously missing, which made a silent
     cross-universe score reuse possible."""
+    from test_strategy import sig_params_sig
     return (f"{interval}|{gate}|{gate_mode}|{market}|{months}mo|"
-            f"{universe}|fib@{fib_anchor}")
+            f"{universe}|fib@{fib_anchor}|sig@{sig_params_sig(sig_params)}")
 
 
 def save_results(df, meta, spec):
@@ -93,7 +94,8 @@ def save_results(df, meta, spec):
                                   meta["market"], meta["months"],
                                   meta.get("universe", "stocks"),
                                   meta.get("gate_mode", "hard"),
-                                  meta.get("fib_anchor", "self"))
+                                  meta.get("fib_anchor", "self"),
+                                  meta.get("sig_params"))
     out["scoring"] = "wf" if meta["wf"] else "oos" if meta["oos"] else "full"
     out["spec"] = json.dumps(spec, default=str)
     fname = os.path.join(RESULTS_DIR,

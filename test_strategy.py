@@ -36,12 +36,12 @@ honesty check) including excess vs the equal-weight buy-and-hold benchmark.
 Exit code 0 on success, 2 on bad arguments/config.
 """
 
+import glob
+import hashlib
 import json
 import os
 import sys
 from datetime import datetime
-
-import glob
 
 import numpy as np
 import pandas as pd
@@ -65,15 +65,32 @@ CACHE_DIR = "signals_cache"
 SIGNALS_SCHEMA_VERSION = 3
 
 
-def load_universe(interval: str, cutoff) -> dict:
+def sig_params_sig(params):
+    """Short signature of a build_signals parameter set. MUST be in the cache
+    key: the params change what the columns MEAN, and a cache that ignores them
+    serves frames built with different settings while reporting success. That
+    is the same silent-wrong-answer failure as the schema bump."""
+    if not params:
+        return "def"
+    return hashlib.sha1(json.dumps(params, sort_keys=True,
+                                   default=str).encode()).hexdigest()[:8]
+
+
+def load_universe(interval: str, cutoff, sig_params: dict = None) -> dict:
     """Signal frames for the whole universe via a parquet cache keyed on the DB
-    file's mtime AND the signal schema version: first call after a fetch (or a
-    schema bump) rebuilds (~2 min), every later call loads in seconds.
-    build_signals default parameters only."""
+    file's mtime, the signal schema version AND the build_signals parameters:
+    first call after a fetch (or a schema/param change) rebuilds (~2 min), every
+    later call loads in seconds.
+
+    `sig_params` is what makes the INDICATORS tunable. They were defaults buried
+    three calls deep (load_universe -> build_signals -> combined_signals ->
+    tdi_signals), so "make what fires the green candle more sensitive" was not
+    expressible at all -- and the cache would have hidden any attempt."""
     key = os.path.join(CACHE_DIR,
                        f"signals_{interval.replace(':', '')}_"
                        f"{int(os.path.getmtime(DB_PATH))}_"
-                       f"v{SIGNALS_SCHEMA_VERSION}.parquet")
+                       f"v{SIGNALS_SCHEMA_VERSION}_"
+                       f"{sig_params_sig(sig_params)}.parquet")
     if not os.path.exists(key):
         try:
             con = connect(read_only=True)
@@ -85,7 +102,8 @@ def load_universe(interval: str, cutoff) -> dict:
             # drops symbols rather than erroring
             older = glob.glob(os.path.join(
                 CACHE_DIR, f"signals_{interval.replace(':', '')}_*_"
-                           f"v{SIGNALS_SCHEMA_VERSION}.parquet"))
+                           f"v{SIGNALS_SCHEMA_VERSION}_"
+                           f"{sig_params_sig(sig_params)}.parquet"))
             if not older:
                 fail(f"DB is locked (a fetch/backfill is running?) and no "
                      f"cached {interval} signals exist for schema "
@@ -101,7 +119,7 @@ def load_universe(interval: str, cutoff) -> dict:
             if len(df) < 300:
                 continue
             try:
-                sig = build_signals(df)
+                sig = build_signals(df, **(sig_params or {}))
             except Exception:
                 continue
             sig.index.name = "ts"
@@ -291,7 +309,7 @@ def main():
             if len(df) < 300:
                 continue
             try:
-                sig = build_signals(df)
+                sig = build_signals(df, **(sig_params or {}))
             except Exception:
                 continue
             if cutoff is not None:

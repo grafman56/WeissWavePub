@@ -206,8 +206,21 @@ def validate_spec(factors):
     return errs
 
 
-def compile_factor(sig, name, d):
-    """One factor definition -> a signed ~[-1,1] array over the frame."""
+MISSING = set()      # columns a factor wanted that the signal layer lacks
+
+
+def compile_factor(sig, name, d, strict=True):
+    """One factor definition -> a signed ~[-1,1] array over the frame.
+
+    strict=False zeroes a factor whose column is absent instead of raising, and
+    records it in MISSING so the caller can warn ONCE by name. That is for the
+    public checkout: search_space.json names indicators from the proprietary
+    suite (combined.py) which simply are not there, and a missing indicator
+    should not brick the whole backtester.
+
+    A zeroed factor is still a DEAD SEARCH DIMENSION -- it is warned about, not
+    hidden. Silence here would be the `dip_bias` mistake again: something that
+    claims to be a factor while contributing nothing."""
     op = d.get("op")
     if op not in OPS:
         raise FactorError(f"{name}: unknown op {op!r}")
@@ -217,7 +230,13 @@ def compile_factor(sig, name, d):
     try:
         v = OPS[op](sig, d)
     except FactorError:
-        raise
+        if strict:
+            raise
+        for k in ("src", "ref", "a", "b"):
+            r = d.get(k)
+            if isinstance(r, str) and r not in sig.columns:
+                MISSING.add(f"{name} (needs '{r}')")
+        return np.zeros(len(sig))
     except KeyError as e:
         raise FactorError(f"{name}: missing parameter {e}") from None
     v = pd.Series(v, index=sig.index).astype(float)

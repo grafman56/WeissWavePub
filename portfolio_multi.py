@@ -28,6 +28,7 @@ from test_strategy import (GATE_DUR, apply_gates, arg, emit, fail,
 from weisswave import portsim
 from weisswave.db import DB_PATH
 from search_space import load_space
+from weisswave import factors as factor_mod
 from weisswave.factors import (FactorError, compile_factor, custom_names,
                                validate_spec)
 from weisswave.optimize import benchmark_index
@@ -100,6 +101,7 @@ HTF_FIB_LR = 10          # weekly pivot window for htf_fib_prox
 # "significant" swings become pivots (matches TradingView Auto Fib depth);
 # a bigger right window means more confirmation lag before the anchor updates.
 FIB_DEFAULTS = {"left": 10, "right": 10}
+FSAMPLE_N = 20000   # bars sampled for percentile thresholds (~5MB)
 
 
 def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
@@ -272,8 +274,8 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         # CUSTOM factors from search_space.json -- compiled from data, never
         # eval'd. They sit between the builtins and the htf_* screen tail.
         for ck, cname in enumerate(CUSTOM_FACTORS, start=len(BUILTIN_ENTRY)):
-            A["FACTORS"][pos, j, ck] = compile_factor(sig, cname,
-                                                      _FACTOR_SPEC[cname])
+            A["FACTORS"][pos, j, ck] = compile_factor(
+                sig, cname, _FACTOR_SPEC[cname], strict=False)
         # higher-TF (weekly) setup factors, pre-attached to the frame by
         # attach_htf (0 when the symbol has no weekly data)
         for fk, name in enumerate(FACTOR_NAMES[HTF_START:], start=HTF_START):
@@ -285,10 +287,42 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
         for mk, name in enumerate(MAINSTREAM_COLUMNS):
             if name in sig.columns:
                 A["MS"][pos, j, mk] = sig[name].to_numpy(bool).astype(float)
+    # FSCALE: each factor's TYPICAL magnitude, mean|f| over valid bars. The
+    # threshold sampler needs this or it cannot know what score a config can
+    # actually reach. Sum-of-weights assumes every factor reaches ~1, which is
+    # true for `trend` (fires 100% of bars) and wildly false for `adp_bull_div`
+    # (0.16%). Baked into the grid so it is computed once and cached with it.
+    A["FSCALE"] = np.array([
+        float(np.abs(A["FACTORS"][:, :, k][V]).mean()) if V.any() else 0.0
+        for k in range(len(FACTOR_NAMES))])
+    # FSAMPLE: a random (N, K) subsample of the factor stack at VALID bars.
+    # This is what makes thresholds honest. Estimating the achievable score from
+    # the weights -- by sum, or by sum*mean|f| -- keeps failing, because the
+    # score is dominated by DENSE factors (trend fires 100% of bars) while the
+    # indicators are sparse (adp_bull_div: 0.16%). The distribution ends up
+    # narrow around its mean, so "3x the mean" is a score that never occurs and
+    # the config silently never trades.
+    # With a sample we stop guessing: a config's threshold is a PERCENTILE of
+    # the scores its own weights actually produce. Cheap (one small matmul per
+    # config), exact in distribution, and immune to the factor stack changing.
+    if V.any():
+        vi, vj = np.nonzero(V)
+        rs = np.random.default_rng(0)          # fixed: the grid must be stable
+        pick = rs.choice(len(vi), size=min(FSAMPLE_N, len(vi)), replace=False)
+        A["FSAMPLE"] = A["FACTORS"][vi[pick], vj[pick], :]
+    else:
+        A["FSAMPLE"] = np.zeros((0, len(FACTOR_NAMES)))
+    if factor_mod.MISSING:
+        # Loud, once, by name. A zeroed factor is a dead search dimension --
+        # the search will waste a weight on it forever otherwise.
+        print(f"WARNING: {len(factor_mod.MISSING)} factor(s) zeroed, their "
+              f"signal columns do not exist (proprietary suite absent?): "
+              f"{', '.join(sorted(factor_mod.MISSING))}", flush=True)
+        factor_mod.MISSING.clear()
     return A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt
 
 
-def attach_htf(frames):
+def attach_htf(frames, sig_params=None):
     """Attach weekly SETUP factors to each intraday frame, reindexed with only
     weeks that have CLOSED (no lookahead -- and it respects "the weekly close
     is the truth"). Weekly bars are resampled from the 25yr daily data:
@@ -299,7 +333,7 @@ def attach_htf(frames):
                       bars -- a screen candidate to test head-to-head against
                       the EMA stack ("which filter works best IS the test").
     These feed the higher-TF screen (which stocks are eligible)."""
-    daily = load_universe("1d", None)
+    daily = load_universe("1d", None, sig_params)
     agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last",
            "Volume": "sum"}
     names = FACTOR_NAMES[HTF_START:]
@@ -338,7 +372,8 @@ def attach_htf(frames):
     return frames
 
 
-def attach_fib_anchor(frames, anchor, fib_left, fib_right):
+def attach_fib_anchor(frames, anchor, fib_left, fib_right,
+                      sig_params=None):
     """Attach the fib TREND ANCHOR (p1/p2/p3) taken from `anchor`'s timeframe,
     aligned onto each trading-TF frame.
 
@@ -361,10 +396,10 @@ def attach_fib_anchor(frames, anchor, fib_left, fib_right):
     if anchor == "self":
         return frames
     if anchor == "1w":
-        base = load_universe("1d", None)
+        base = load_universe("1d", None, sig_params)
         dur = pd.Timedelta(days=7)
     else:
-        base = load_universe(anchor, None)
+        base = load_universe(anchor, None, sig_params)
         dur = GATE_DUR.get(anchor, pd.Timedelta(0))
     agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last",
            "Volume": "sum"}
@@ -422,7 +457,7 @@ def prepare_grid(strategies, interval="15m",
                  months=0, exit_cols=None, gstop=None, ghold=None,
                  gtarget=None, atr_len=14, swing_look=20, cutoff=None,
                  fib=None, universe="stocks", gate_mode="hard",
-                 fib_anchor="1d"):
+                 fib_anchor="1d", sig_params=None):
     """All the expensive, param-independent work: load -> gate -> market ->
     build 2D grid. Do this ONCE, then sweep exit params via portsim.simulate
     on the returned arrays (each config = a numba call = milliseconds).
@@ -434,12 +469,14 @@ def prepare_grid(strategies, interval="15m",
              if "@" in g] if gate_arg != "none" else []
     if cutoff is None and months:
         cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
-    frames = select_universe(load_universe(interval, cutoff), universe)
+    frames = select_universe(load_universe(interval, cutoff, sig_params),
+                             universe)
     if gates:
         frames = apply_gates(frames, gates, None)
     frames = _apply_market(frames, market)
-    frames = attach_htf(frames)
-    frames = attach_fib_anchor(frames, fib_anchor, fib["left"], fib["right"])
+    frames = attach_htf(frames, sig_params)
+    frames = attach_fib_anchor(frames, fib_anchor, fib["left"], fib["right"],
+                               sig_params)
     grid = build_grid(frames, strategies, exit_cols or [], gstop, ghold,
                       gtarget, atr_len, swing_look, fib["left"], fib["right"],
                       gate_mode=gate_mode)
@@ -457,14 +494,18 @@ GRID_CACHE_DIR = "grid_cache"
 #      levels MEAN.
 # v11: custom data-defined factors join the stack (FACTOR_NAMES is now
 #      spec-driven), so the factor layout depends on search_space.json.
+# v12: A["FSCALE"] per-factor typical magnitude added (threshold sampling).
+# v13: A["FSAMPLE"] bar subsample added -- thresholds are percentiles of the
+#      score a config actually produces, not an estimate from its weights.
+# v14: sig_params (indicator sensitivity) is a grid dimension.
 # Cached grids from v7/v8 have a different layout and MUST NOT be reused.
-GRID_SCHEMA_VERSION = 11
+GRID_SCHEMA_VERSION = 14
 
 
 def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                      exit_cols, gstop, ghold, gtarget, atr_len, swing_look,
                      db_mtime, fib=None, universe="stocks", gate_mode="hard",
-                     fib_anchor="1d"):
+                     fib_anchor="1d", sig_params=None):
     """A file path uniquely determined by every input build_grid consumes.
     Same key <-> byte-identical grid, so a cache hit is always trustworthy.
     db_mtime is in the filename (not just the hash) so stale-data grids are
@@ -482,6 +523,8 @@ def _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
         # definition must rebuild, never reuse a grid whose columns mean
         # something else
         "factors": _FACTOR_SPEC,
+        # the indicator params change what every signal column MEANS
+        "sig_params": sig_params or {},
     }, sort_keys=True, default=str)
     h = hashlib.sha1(payload.encode()).hexdigest()[:16]
     return os.path.join(GRID_CACHE_DIR,
@@ -512,7 +555,7 @@ def prepare_grid_cached(strategies, interval="15m",
                         months=0, exit_cols=None, gstop=None, ghold=None,
                         gtarget=None, atr_len=14, swing_look=20, fib=None,
                         universe="stocks", gate_mode="hard",
-                        fib_anchor="1d"):
+                        fib_anchor="1d", sig_params=None):
     """prepare_grid with a disk cache: pay the ~grid-build once per
     (strategies, gate, market, interval, window, params, DB-data) tuple, then
     every later sweep loads the 2D grid in ~a second. Returns
@@ -523,13 +566,14 @@ def prepare_grid_cached(strategies, interval="15m",
     path = _grid_cache_path(strategies, interval, gate_arg, market, cutoff,
                             exit_cols, gstop, ghold, gtarget, atr_len,
                             swing_look, int(os.path.getmtime(DB_PATH)), fib,
-                            universe, gate_mode, fib_anchor)
+                            universe, gate_mode, fib_anchor, sig_params)
     if os.path.exists(path):
         return _load_grid(path), True
     grid, _frames = prepare_grid(
         strategies, interval, gate_arg, market, months, exit_cols, gstop,
         ghold, gtarget, atr_len, swing_look, cutoff=cutoff, fib=fib,
-        universe=universe, gate_mode=gate_mode, fib_anchor=fib_anchor)
+        universe=universe, gate_mode=gate_mode, fib_anchor=fib_anchor,
+        sig_params=sig_params)
     _save_grid(path, grid)
     # drop grids built against older DB data for this interval
     mtoken = os.path.basename(path).rsplit("_", 1)[0]  # grid_<int>_<mtime>

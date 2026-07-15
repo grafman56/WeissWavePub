@@ -46,7 +46,7 @@ WSL_REPO = "/mnt/c/Users/graf/Documents/WeissWave"
 
 
 def job_args(universe, gate, gate_mode, interval, market, months, seed, iters,
-             gens, holdout, wf, space, sets):
+             gens, holdout, wf, space, sets, jobs=1):
     """Every grid-defining flag MUST be forwarded. Anything accepted here but
     not passed through is a silent no-op: the job quietly runs a different
     grid than the one the survivors are then queried against."""
@@ -55,6 +55,7 @@ def job_args(universe, gate, gate_mode, interval, market, months, seed, iters,
             f"--market={market}", f"--months={months}",
             f"--seed={seed}", f"--iters={iters}", f"--gens={gens}",
             f"--holdout={holdout}", f"--wf-folds={wf}",
+            f"--jobs={jobs}",
             f"--space={space}"] + [f"--set={k}={v}" for k, v in sets.items()]
 
 
@@ -66,6 +67,43 @@ def _n_runs():
 def run_direct(args):
     """Run one agent_search job in-process as a subprocess."""
     subprocess.run([sys.executable, "agent_search.py", *args], check=False)
+
+
+TASK_DIR = "agent-tasks"
+
+
+def run_via_agent(args, i, timeout_s=300):
+    """Dispatch one search job to the ww-runner AGENT (opencode -> LM Studio).
+
+    Slower than run_direct by construction -- that is not the point. The point
+    is tuning the local agent stack on a real job. Returns the CompletedProcess;
+    the caller verifies BY ARTIFACT, never by what the model reports.
+
+    WHAT MAKES THIS WORK WHERE THE OLD `runner` DID NOT:
+    * ww-runner is mode:PRIMARY. `opencode run --agent X` CANNOT invoke a
+      mode:subagent -- it silently falls through to whatever primary agent is
+      default (another project's `coder`), which is why dispatches wandered off
+      for 598s. The global `runner` is a subagent; this one is not.
+    * It is PROJECT-LOCAL (.opencode/agent/), so it is versioned with this repo
+      and cannot collide with another project's agents.
+    * The task file PATH goes via stdin, not argv: opencode 1.17.18 hangs
+      forever at init on an argv prompt containing double quotes when stdin is a
+      non-TTY. File/stdin prompts were never affected.
+    * The command inside the task file uses python.exe -- WSL's python3 has no
+      pandas; the whole stack is Windows python reached through interop.
+    """
+    os.makedirs(TASK_DIR, exist_ok=True)
+    tf = os.path.join(TASK_DIR, f"search_job{i}.txt")
+    with open(tf, "w", newline="\n", encoding="utf-8") as f:
+        f.write("python.exe agent_search.py " + " ".join(args) + "\n")
+    wsl_tf = f"{WSL_REPO}/{TASK_DIR}/search_job{i}.txt"
+    prompt = os.path.join(".opencode", f"_task{i}.txt")
+    with open(prompt, "w", newline="\n", encoding="utf-8") as f:
+        f.write(f"{wsl_tf}\n")
+    inner = (f"cd {WSL_REPO} && timeout {timeout_s} ~/.opencode/bin/opencode "
+             f"run --agent ww-runner < {WSL_REPO}/.opencode/_task{i}.txt")
+    return subprocess.run(["wsl", "bash", "-lc", inner], check=False,
+                          capture_output=True, text=True)
 
 
 PROMPT_FILE = os.path.join(".opencode", "_prompt.txt")
@@ -280,69 +318,122 @@ def main():
     holdout = float(arg(args, "holdout", str(VAL["holdout"])))
     wf = int(arg(args, "wf-folds", str(VAL["wf_folds"])))
     tmo = int(arg(args, "agent-timeout", "60"))   # baseline, not padding
-    director = "--director" in args or "--via-agents" in args
+    # per-JOB parallelism. Jobs run sequentially (each is a different grid,
+    # and each worker holds its own copy -- running grids concurrently
+    # multiplies RAM), but the configs inside a job fan out.
+    jobs = int(arg(args, "jobs", "1"))
+    director = "--director" in args
+    via = "--via-agents" in args   # execute jobs THROUGH the agent stack
     gsig = grid_sig_of(interval, gate, market, months, universe, gate_mode,
                        arg(args, "fib-anchor", G.get("fib_anchor", "1d")))
 
     if director:
-        # THE MODEL DECIDES, PYTHON EXECUTES. The strategist reads a summary and
-        # proposes job lines; every line is validated here before anything runs.
-        print("asking ww-strategist what to search next "
-              "(zero tools, it never touches bash) ...", flush=True)
-        summary = store_summary(gsig)
-        raw, err = ask_strategist(summary, tmo)
-        if err:
-            print(f"  {err}", flush=True)
-            return
-        proposed, rejected = parse_jobs(raw)
-        for line, why in rejected:
-            print(f"  REJECTED {line!r}: {why}", flush=True)
-        if not proposed:
-            print("  the strategist proposed nothing usable. Raw reply:",
-                  flush=True)
-            for ln in raw.strip().splitlines()[-8:]:
-                print(f"      | {ln}", flush=True)
-            print("  (is a model loaded? `lms ps`. Is ww-strategist listed? "
-                  "`opencode agent list` from this repo.)")
-            return
-        print(f"  strategist proposed {len(proposed)} job(s):", flush=True)
-        for j in proposed:
-            print(f"    {j}", flush=True)
+        # THE UNATTENDED LOOP. This is the point of the whole agent stack: the
+        # local model burns FREE compute choosing ground and Python tests it,
+        # round after round, accumulating into the store. Paid usage for a whole
+        # night of searching is ONE command -- no paid model reads a result, or
+        # picks a seed, or babysits a job. A smarter agent only surfaces at the
+        # end to validate what survived.
+        rounds = int(arg(args, "rounds", "1"))
         t0 = time.time()
-        ok = 0
-        for i, j in enumerate(proposed):
-            ja = job_args(j["universe"], gate, j.get("gate_mode", gate_mode),
-                          interval, market, months, j["seed"], j["iters"],
-                          j["gens"], holdout, wf, space, sets)
-            if "fib_anchor" in j:
-                ja.append(f"--fib-anchor={j['fib_anchor']}")
-            print(f"  [{i+1}/{len(proposed)}] running {j['universe']} "
-                  f"seed={j['seed']} ...", flush=True)
-            before = _n_runs()
-            run_direct(ja)                    # a subprocess. Always.
-            ok += _n_runs() > before
-        print(f"\n{ok}/{len(proposed)} job(s) produced results in "
-              f"{time.time()-t0:.0f}s.")
-        sv = survivors(sp["curation"], None)
-        print(f"{len(sv)} config(s) in the store beat buy-and-hold on a "
-              f"holdout. (Holdout caveat below still applies.)")
+        total_jobs = 0
+        misses = 0        # consecutive rounds the strategist gave us nothing
+        for rnd in range(rounds):
+            print(f"\n=== round {rnd+1}/{rounds} "
+                  f"({time.time()-t0:.0f}s elapsed) ===", flush=True)
+            # the summary reflects everything previous rounds landed, so the
+            # strategist steers rather than repeats
+            summary = store_summary(gsig)
+            raw, err = ask_strategist(summary, tmo)
+            if err:
+                print(f"  {err}", flush=True)
+                break
+            proposed, rejected = parse_jobs(raw)
+            for line, why in rejected:
+                print(f"  REJECTED {line!r}: {why}", flush=True)
+            if not proposed:
+                # A local 4B model will occasionally emit something unparseable.
+                # An overnight loop must SHRUG AND CONTINUE, not die on round 3
+                # of 50 and waste the night. Only give up if it is persistently
+                # mute -- that means the stack is broken, not the model unlucky.
+                misses += 1
+                print(f"  nothing usable this round ({misses} in a row). Raw:",
+                      flush=True)
+                for ln in raw.strip().splitlines()[-4:]:
+                    print(f"      | {ln}", flush=True)
+                if misses >= 3:
+                    print("  3 empty rounds in a row -- the stack is broken, "
+                          "not unlucky. Check `lms ps` and "
+                          "`opencode agent list`. Stopping.", flush=True)
+                    break
+                continue
+            misses = 0
+            print(f"  proposed {len(proposed)} job(s)", flush=True)
+            for i, j in enumerate(proposed):
+                ja = job_args(j["universe"], gate,
+                              j.get("gate_mode", gate_mode), interval, market,
+                              months, j["seed"], j["iters"], j["gens"],
+                              holdout, wf, space, sets, jobs)
+                if "fib_anchor" in j:
+                    ja.append(f"--fib-anchor={j['fib_anchor']}")
+                print(f"  [{i+1}/{len(proposed)}] {j['universe']} "
+                      f"seed={j['seed']} anchor={j.get('fib_anchor','-')} "
+                      f"gate={j.get('gate_mode','-')} ...", flush=True)
+                before = _n_runs()
+                run_direct(ja)                # subprocess: free, deterministic
+                total_jobs += _n_runs() > before
+        print(f"\n{total_jobs} job(s) landed across {rounds} round(s) in "
+              f"{time.time()-t0:.0f}s. Paid tokens spent: none.")
+        # SCOPED. survivors(..., None) pools incompatible grids and inflates the
+        # count -- it reported 101 "survivors" by counting hard-gated 12-month
+        # crypto next to gate-as-factor full-history runs.
+        sv = survivors(sp["curation"], gsig)
+        print(f"{len(sv)} config(s) on THIS grid ({gsig}) beat buy-and-hold on "
+              f"its holdout.")
+        print("\nDo NOT read that as N edges found. Every config scored against "
+              "the same fixed slice spends a little of it; at this volume the "
+              "count measures luck, not skill. Run validate.py on the ground "
+              "that looks promising -- that is the number worth a paid model's "
+              "attention.")
         return
 
+    if via and not model_loaded():
+        print("LM Studio is not serving on :1234 -- start it and load a model "
+              "(`lms ps`). Not dispatching to the agent.")
+        return
     print(f"orchestrating {len(seeds)} search jobs: {interval} {universe} "
           f"gate={gate}/{gate_mode} "
-          f"(direct subprocess); each: {iters} "
-          f"seeds x {gens} gens, holdout={holdout:.0%}", flush=True)
+          f"({'VIA ww-runner agent -> LM Studio' if via else 'direct subprocess'})"
+          f"; each: {iters} seeds x {gens} gens, holdout={holdout:.0%}",
+          flush=True)
     t0 = time.time()
     ok = 0
     for i, s in enumerate(seeds):
         ja = job_args(universe, gate, gate_mode, interval, market, months, s,
-                      iters, gens, holdout, wf, space, sets)
+                      iters, gens, holdout, wf, space, sets, jobs)
         print(f"  [{i+1}/{len(seeds)}] seed={s} ...", flush=True)
         before = _n_runs()
-        run_direct(ja)                       # a subprocess. Always.
-        ok += _n_runs() > before
+        t = time.time()
+        if via:
+            p = run_via_agent(ja, i, tmo)
+            # VERIFY BY ARTIFACT, never by what the model reports: a small model
+            # will reply DONE having relayed nothing (it has already done so).
+            landed = _n_runs() > before
+            print(f"      {'ok' if landed else 'FAILED'}: artifact "
+                  f"{'landed' if landed else 'MISSING'} after "
+                  f"{time.time()-t:.0f}s (rc={p.returncode})", flush=True)
+            if not landed:
+                for ln in ((p.stdout or "") + (p.stderr or "")
+                           ).strip().splitlines()[-10:]:
+                    print(f"        | {ln}", flush=True)
+            ok += landed
+        else:
+            run_direct(ja)
+            ok += _n_runs() > before
+            print(f"      done in {time.time()-t:.0f}s", flush=True)
 
-    print(f"\n{ok}/{len(seeds)} job(s) produced results.")
+    print(f"\n{ok}/{len(seeds)} job(s) produced results in "
+          f"{time.time()-t0:.0f}s.")
     sv = survivors(sp["curation"], gsig)
     print(f"\ndone in {time.time()-t0:.0f}s. {len(sv)} config(s) matching this "
           f"grid beat buy-and-hold on their HELD-OUT slice.\n  grid_sig={gsig}")

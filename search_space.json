@@ -11,7 +11,6 @@
     "weight cap of 3.0 means a setup needing w=5 is invisible AND the search",
     "will never tell you it was looking through a keyhole. Widen deliberately."
   ],
-
   "grid": {
     "_doc": "How the data grid is built. Changing any of these builds (and caches) a different grid.",
     "interval": "15m",
@@ -26,7 +25,6 @@
     "months": 0,
     "universe": "crypto"
   },
-
   "factors": {
     "_doc": [
       "FACTORS AS DATA. Each entry compiles to a signed ~[-1,1] plane and joins the factor stack, so it gets a weight and is instantly searchable. A SETUP IS A WEIGHT VECTOR, NOT CODE: 'catching the knife' = nonzero weights on sell_exhaustion + holds_200ema + buy_surge.",
@@ -36,73 +34,291 @@
       "NOTE: these are read from THIS file at import (portfolio_multi builds FACTOR_NAMES from it). --space=FILE swaps the other knobs but not the factor list; edit here to change what exists. The grid cache keys on this spec, so a change rebuilds rather than silently reusing the old layout."
     ],
     "sell_exhaustion": {
-      "op": "falling", "src": "volumedn", "bars": 5,
+      "op": "falling",
+      "src": "volumedn",
+      "bars": 5,
       "_doc": "Sell pressure fading over the last 5 bars. Bullish, hence sign +1."
     },
     "holds_200ema": {
-      "op": "dist_above", "src": "Close", "ref": "ema200", "scale": 0.02,
+      "op": "dist_above",
+      "src": "Close",
+      "ref": "ema200",
+      "scale": 0.02,
       "_doc": "Price's signed distance above the 200 EMA. +1 = 2% above, -1 = 2% below. 'the price doesnt hammer below the 200ema, it holds'."
     },
     "buy_surge": {
-      "op": "cross_up", "a": "volumeup", "b": "volumedn", "within": 3,
+      "op": "cross_up",
+      "a": "volumeup",
+      "b": "volumedn",
+      "within": 3,
       "_doc": "Buying volume took over from selling volume within 3 bars."
     },
     "coil": {
-      "op": "hh_hl", "bars": 10,
+      "op": "hh_hl",
+      "bars": 10,
       "_doc": "Higher highs AND higher lows -- compression before expansion."
     },
     "absorption": {
-      "op": "fails_to_break", "src": "Low", "ref": "ema200", "bars": 3,
+      "op": "fails_to_break",
+      "src": "Low",
+      "ref": "ema200",
+      "bars": 3,
       "_doc": "Sellers pierced the 200 EMA but the close is back above it: the push failed."
     },
     "stalling": {
-      "op": "stall", "src": "Close", "bars": 5, "scale": 0.02, "sign": -1,
+      "op": "stall",
+      "src": "Close",
+      "bars": 5,
+      "scale": 0.02,
+      "sign": -1,
       "_doc": "Price going nowhere. sign -1 because teetering instead of pushing argues AGAINST a long -- the reversal read at a fib level."
+    },
+    "_doc_indicators": [
+      "INDICATOR COMBINATIONS ARE NOW SEARCHED, not chosen. Each indicator below is its own weighted factor, so WHICH COMBINATION fires is decided by WHICH WEIGHTS ARE NON-ZERO -- w=0 means that indicator is out of the strategy. The search discovers 'tdi_long + adp_bull_div' instead of being handed it in bot_strategies.json, and conf_threshold decides how many must agree.",
+      "This is 'weights not gates' taken all the way down. It is also cheap: every factor precomputes into ONE grid and the weights sweep at sim time.",
+      "Some of these come from the proprietary signal suite (combined.py) and will not exist in a public checkout. A missing column is zeroed with a named warning at grid build, not a crash -- but a zeroed factor is a DEAD search dimension, so trim the list to what your signal layer actually has."
+    ],
+    "ind_golden": {
+      "op": "column",
+      "src": "golden"
+    },
+    "ind_tdi_long": {
+      "op": "column",
+      "src": "tdi_long"
+    },
+    "ind_adp_bull_div": {
+      "op": "column",
+      "src": "adp_bull_div"
+    },
+    "ind_wt_bull_div": {
+      "op": "column",
+      "src": "wt_bull_div"
+    },
+    "ind_wwv_bull": {
+      "op": "column",
+      "src": "wwv_bull"
+    },
+    "ind_spr": {
+      "op": "column",
+      "src": "spr"
+    },
+    "ind_vol_cross_up": {
+      "op": "column",
+      "src": "volume_cross_up"
+    },
+    "ind_heavy_buy": {
+      "op": "column",
+      "src": "very_heavy_buy"
+    },
+    "_doc_filters": [
+      "FILTERS ARE FACTORS TOO. 'Trade with the trend' stops being a law the search cannot see and becomes a weight it has to EARN. w_flt_minervini = 0 tests the strategy with that filter OFF; a large weight makes it a de facto gate. Which screen works best -- minervini vs above_50ma vs the RCI ichimoku read -- is now an empirical question the search answers, which is what Paul has been asking for since the start.",
+      "Note these are 0/1 columns, so they only ever ARGUE FOR a long (never against). Use sign:-1 on a copy if you want the absence to push back."
+    ],
+    "flt_minervini": {
+      "op": "column",
+      "src": "minervini"
+    },
+    "flt_above_50ma": {
+      "op": "column",
+      "src": "above_50ma"
+    },
+    "flt_in_up_wave": {
+      "op": "column",
+      "src": "in_up_wave"
+    },
+    "flt_rci_bull": {
+      "op": "column",
+      "src": "rci_bull"
     }
   },
-
+  "signals": {
+    "_doc": [
+      "INDICATOR SENSITIVITY -- what makes a signal fire in the first place. These were defaults buried THREE CALLS DEEP (load_universe -> build_signals -> combined_signals -> tdi_signals) and the signals cache did not key on them, so 'make what fires the green candle more sensitive' was not merely hard, it was inexpressible -- and the cache would have hidden any attempt by serving frames built with the old numbers.",
+      "GOLDEN = volume_cross_up AND tdi_long. So the green candle's sensitivity is `tdi.oversold` (how deep the RSI band must be) plus `pullback` (how eagerly the Weis wave flips, which drives volumeup/volumedn and therefore volume_cross_up). MEASURED at the shipped defaults on BTC daily: tdi_long fires 29/2373 bars (1.22%), golden 14/2373 (0.59%) -- roughly twice a year. Whether that is correctly strict or badly mis-set for this timeframe is a QUESTION FOR THE SEARCH.",
+      "COST: changing any of these invalidates the signals cache (a ~2min rebuild per interval) and the grid. They are a GRID dimension like gate/fib_anchor -- run a job per setting and compare; grid_sig keeps them apart so results at oversold=40 are never compared to oversold=45.",
+      "tdi.* only exists when the proprietary suite is present; it is ignored otherwise."
+    ],
+    "wt_channel": 9,
+    "wt_average": 12,
+    "wt_smooth": 3,
+    "ob_level": 60.0,
+    "os_level": -60.0,
+    "pullback": 2,
+    "_pullback_doc": "Weis wave trend-detection length. Lower = the wave flips more eagerly = more volume_cross_up = more golden candles.",
+    "very_heavy_mult": 10.0,
+    "heavy_mult": 4.0,
+    "confirm_window": 3,
+    "combined": {
+      "tdi": {
+        "rsi_len": 21,
+        "fast_len": 7,
+        "slow_len": 2,
+        "overbought": 60.0,
+        "oversold": 40.0,
+        "_oversold_doc": "tdi_long = crossunder(fast, slow) AND slow < oversold. RAISE it (45, 50) to fire more often / earlier; LOWER it (35) to demand a deeper washout. This is the knob behind 'if I make what fires the green candle more sensitive, does it help or hurt'."
+      },
+      "wt": {
+        "channel": 9,
+        "average": 13,
+        "smooth": 3,
+        "_doc": "The OVERLAY's WaveTrend (9/13/3 on hlc3) -- NOT the WTV panel's (9/12/3). Two different WaveTrends in one stack; the port had been feeding the panel's series to redDiamond/blood_diamond/wtbuy/wtsell."
+      },
+      "pivots": {
+        "_doc": "PIVOT SETTINGS PER SIGNAL FAMILY. lbR is the CONFIRMATION LAG -- the 'offset by one bar' in the Pine. lbR too small = fires on a pivot that is not one yet (dangerous). lbR too large = confirmed after the move (worthless). That trade-off was frozen at 1 everywhere; now it is testable. lbL = how significant a swing must be to count as a pivot at all.",
+        "macd": {
+          "lbL": 30,
+          "lbR": 1,
+          "range_lower": 2,
+          "range_upper": 70
+        },
+        "hist": {
+          "lbL": 30,
+          "lbR": 1,
+          "range_lower": 2,
+          "range_upper": 70
+        },
+        "adp": {
+          "lbL": 30,
+          "lbR": 1,
+          "range_lower": 2,
+          "range_upper": 70
+        },
+        "weis": {
+          "lbL": 10,
+          "lbR": 1,
+          "range_lower": 5,
+          "range_upper": 30
+        },
+        "spr": {
+          "lbL": 6,
+          "lbR": 1,
+          "range_lower": 5,
+          "range_upper": 30
+        },
+        "wwv": {
+          "lbL": 10,
+          "lbR": 1
+        }
+      }
+    },
+    "pullback1": 2,
+    "_pullback1_doc": "SECOND wave engine (Combined's 'TDL for buy/sell pressure'). Drives volumeup1/volumedn1 -> crossup -> golden. VERIFIED: at pullback1 == pullback the two engines are byte-identical, so this changes nothing until you move it. It exists so 'what if buy/sell pressure flipped more eagerly than the wave?' is askable at all."
+  },
   "sim": {
     "_doc": "Values passed straight to portsim that were previously literals in agent_search.",
     "conf_entry": 1,
     "htf_screen": 1,
     "_htf_screen_doc": "The weekly SETUP screen (which names are eligible). 1 = on. The htf_thr threshold is sampled per-config below.",
     "swing_buf": 0.005,
-    "fib_ext": [1.0, 1.272, 1.618, 2.0],
+    "fib_ext": [
+      1.0,
+      1.272,
+      1.618,
+      2.0
+    ],
     "hold_bars": 0,
     "_hold_bars_doc": "Time-clock exit in bars. 0 = off. A prior session hardcoded 78 (3 trading days) which silently closed 81% of trades, then hardcoded it to 0. It is a knob, not a constant -- sweep it if you want it.",
     "cost_bps": 10,
     "capital": 100000
   },
-
   "space": {
     "_doc": "What rng_cfg samples. Each entry is a distribution the search draws from.",
-    "weights": {"dist": "uniform", "lo": 0.0, "hi": 3.0, "mute_prob": 0.25,
-                "_doc": "Per-factor weight. mute_prob = chance a factor is zeroed outright."},
-    "thr": {"dist": "relative", "lo": -0.10, "hi": 0.80,
-            "_doc": "ENTRY threshold. 'relative' = a FRACTION of the max score the sampled weights can actually produce, so the threshold is always reachable. Use dist='uniform' with lo/hi for the old absolute mode."},
-    "htf": {"dist": "relative", "lo": -0.40, "hi": 0.80,
-            "_doc": "SCREEN threshold, same relative logic. The old absolute uniform(-1.0, 2.5) drew thresholds the weights often could not reach, which is why 27% of the stored configs never traded."},
-    "stop": {"dist": "choice", "values": ["fib", "swing", "atr", "pct"]},
-    "trail": {"dist": "choice", "values": ["pct", "structure", "fib"]},
-    "fr": {"dist": "uniform", "lo": 0.5, "hi": 0.9, "round": 3,
-           "_doc": "fib_stop_ratio"},
-    "ta": {"dist": "choice", "values": [0, 0, 0.04, 0.06],
-           "_doc": "trail activation; repeated values weight the draw"},
-    "td": {"dist": "uniform", "lo": 0.03, "hi": 0.15, "round": 3,
-           "_doc": "trail distance"},
-    "tgt": {"dist": "choice", "values": [0, 0, 0, 0.1, 0.2]},
-    "mp": {"dist": "choice", "values": [3, 5, 8], "_doc": "max concurrent positions"}
+    "weights": {
+      "dist": "uniform",
+      "lo": 0.0,
+      "hi": 3.0,
+      "mute_prob": 0.25,
+      "_doc": "Per-factor weight. mute_prob = chance a factor is zeroed outright."
+    },
+    "thr": {
+      "dist": "percentile",
+      "lo": 50.0,
+      "hi": 99.5,
+      "_doc": "ENTRY threshold, as a MULTIPLE of the score the sampled weights TYPICALLY produce: sum(w_k * mean|factor_k|), read from the grid's FSCALE. 1.0 = around the average bar, 3.0 = only strong confluence. This must scale by each factor's real magnitude: sparse indicators like adp_bull_div fire on 0.16% of bars while `trend` fires on 100%, so sum-of-weights overestimated the achievable score ~4x and configs stopped trading entirely."
+    },
+    "htf": {
+      "dist": "percentile",
+      "lo": 10.0,
+      "hi": 95.0,
+      "_doc": "SCREEN threshold, same relative logic. The old absolute uniform(-1.0, 2.5) drew thresholds the weights often could not reach, which is why 27% of the stored configs never traded."
+    },
+    "stop": {
+      "dist": "choice",
+      "values": [
+        "fib",
+        "swing",
+        "atr",
+        "pct"
+      ]
+    },
+    "trail": {
+      "dist": "choice",
+      "values": [
+        "pct",
+        "structure",
+        "fib"
+      ]
+    },
+    "fr": {
+      "dist": "uniform",
+      "lo": 0.5,
+      "hi": 0.9,
+      "round": 3,
+      "_doc": "fib_stop_ratio"
+    },
+    "ta": {
+      "dist": "choice",
+      "values": [
+        0,
+        0,
+        0.04,
+        0.06
+      ],
+      "_doc": "trail activation; repeated values weight the draw"
+    },
+    "td": {
+      "dist": "uniform",
+      "lo": 0.03,
+      "hi": 0.15,
+      "round": 3,
+      "_doc": "trail distance"
+    },
+    "tgt": {
+      "dist": "choice",
+      "values": [
+        0,
+        0,
+        0,
+        0.1,
+        0.2
+      ]
+    },
+    "mp": {
+      "dist": "choice",
+      "values": [
+        3,
+        5,
+        8
+      ],
+      "_doc": "max concurrent positions"
+    }
   },
-
   "mutate": {
     "_doc": "How the evolutionary step perturbs an elite config.",
-    "weight_prob": 0.25, "weight_sigma": 0.8,
-    "thr_prob": 0.4, "thr_sigma": 0.4,
-    "htf_prob": 0.4, "htf_sigma": 0.4,
-    "stop_prob": 0.2, "trail_prob": 0.2,
-    "td_prob": 0.3, "td_sigma": 0.03, "td_lo": 0.02, "td_hi": 0.2
+    "weight_prob": 0.25,
+    "weight_sigma": 0.8,
+    "thr_prob": 0.4,
+    "thr_sigma": 0.25,
+    "htf_prob": 0.4,
+    "htf_sigma": 0.25,
+    "_sigma_doc": "thr/htf sigmas are FRACTIONS (proportional), not absolute steps -- thr scales with the number of factors, so an absolute step breaks whenever the stack changes.",
+    "stop_prob": 0.2,
+    "trail_prob": 0.2,
+    "td_prob": 0.3,
+    "td_sigma": 0.03,
+    "td_lo": 0.02,
+    "td_hi": 0.2
   },
-
   "fitness": {
     "_doc": "How a config is ranked in TRAINING. Not the honest number -- that is the holdout.",
     "worst_fold_penalty": 0.5,
@@ -110,17 +326,20 @@
     "min_trades": 1,
     "_min_trades_doc": "Total trades across all folds below this = UNFIT (dropped, never ranked). A config that never trades is not a strategy: its excess computes as 0.0, which would otherwise outrank every config that traded and lost."
   },
-
   "benchmark": {
     "_doc": "GOAL #2's third leg. Paul's signals must be compared to time-tested mainstream strategies, not only to buy-and-hold. Each one is run through the SAME engine/stops/costs/slots as any config, so the comparison is apples-to-apples rather than a quoted statistic. Computed ONCE per fold (not per config) so the bar never moves under the search's feet.",
-    "mainstream": ["golden_cross", "macd_cross_up", "rsi_oversold_cross", "above_50ma"],
+    "mainstream": [
+      "golden_cross",
+      "macd_cross_up",
+      "rsi_oversold_cross",
+      "above_50ma"
+    ],
     "stop_mode": "pct",
     "stop_pct": 0.08,
     "max_pos": 5,
     "_UNAPPROVED_PLACEHOLDER": "THE EXITS BELOW ARE NOT PAUL'S. A hard 8% stop with no trail and no target was invented by an assistant, not chosen by him, and it CONTRADICTS his own rule (max hold 0, let winners run, test trailing-stop variations / sell-X%-at-target). Whatever CAGR the benchmark prints is therefore partly an artifact of an arbitrary exit. Do not present mainstream comparisons as findings until Paul specifies the exits the textbook strategies should get.",
     "_note": "The textbook strategies run UNGATED, as taught. Dressing them up with our own trend filter would flatter us by making the benchmark ours."
   },
-
   "curation": {
     "_doc": "The bar a config must clear to be called a survivor (orchestrate.py).",
     "require_beat_mainstream": true,
@@ -131,7 +350,6 @@
     "min_holdout_exc": 0.0,
     "_min_holdout_exc_doc": "Must beat buy-and-hold by more than this on the unseen slice."
   },
-
   "validation": {
     "_doc": "The honesty chain. agent_search uses wf_folds + holdout; validate.py uses outer_folds + mode + train_frac and is the honest one.",
     "wf_folds": 6,

@@ -97,27 +97,59 @@ def _draw(r, d, n=None):
     return v
 
 
-def sample_cfg(r, sp, K, htf_start):
-    """Draw one random config from the space. Threshold handling is the part
-    that matters: with dist='relative', thr is drawn as a fraction of the max
-    ENTRY score the drawn weights can produce (sum of entry weights, since
-    factors are normalized to ~[-1,1]), and htf likewise over the SCREEN
-    weights. That keeps every sampled config able to actually trade."""
+def sample_cfg(r, sp, K, htf_start, fscale=None, fsample=None):
+    """Draw one random config from the space.
+
+    THRESHOLD SAMPLING IS THE PART THAT MATTERS. With dist='relative', thr is a
+    multiple of the score the drawn weights can TYPICALLY produce:
+
+        typical_score = sum(w_k * fscale_k)   where fscale_k = mean|factor_k|
+
+    `fscale` is what makes this honest. Without it we assume every factor
+    reaches ~1 -- true for `trend` (fires on 100% of bars), wildly false for
+    `adp_bull_div` (0.16%). Adding sparse indicator factors made sum-of-weights
+    overestimate the achievable score ~4x, so thresholds landed above anything a
+    config could hit and 7 of 12 configs never traded. Fall back to 1.0 per
+    factor only when no scale is supplied (old grids)."""
     s = sp["space"]
     wd = s["weights"]
     w = np.round(r.uniform(wd.get("lo", 0.0), wd.get("hi", 3.0), K), 2)
     w[r.random(K) < wd.get("mute_prob", 0.25)] = 0.0
+    fs = np.ones(K) if fscale is None else np.asarray(fscale, float)
 
-    def thresh(key, wsum):
+    def thresh(key, typical, sample=None):
         d = s[key]
-        if d.get("dist") == "relative":
+        dist = d.get("dist")
+        if dist == "percentile" and (sample is None or not len(sample)):
+            # No FSAMPLE (a pre-v13 grid, or a caller with no data). lo/hi are
+            # PERCENTILES here (50..99.5) -- returning one as an absolute
+            # threshold would be unreachable by construction, i.e. the exact bug
+            # this whole mechanism exists to prevent. Degrade to a bounded
+            # fraction of the typical score instead.
+            q = r.uniform(d.get("lo", 50.0), d.get("hi", 99.5))
+            return round(float((q / 100.0) * max(typical, 1e-9)), 4)
+        if dist == "percentile" and sample is not None and len(sample):
+            # THE HONEST ONE: the threshold is a percentile of the scores THIS
+            # config's own weights actually produce on real bars. q=99 means
+            # "enter on the top 1% of bars by confluence" -- which is what a
+            # threshold is FOR, and it cannot become unreachable no matter how
+            # the factor stack changes.
+            q = r.uniform(d.get("lo", 50.0), d.get("hi", 99.5))
+            return round(float(np.percentile(sample, q)), 4)
+        if dist == "relative":
             frac = r.uniform(d.get("lo", -0.1), d.get("hi", 0.8))
-            return round(float(frac * max(wsum, 1e-9)), 2)
-        return round(float(r.uniform(d.get("lo", 0.0), d.get("hi", 1.0))), 2)
+            return round(float(frac * max(typical, 1e-9)), 3)
+        return round(float(r.uniform(d.get("lo", 0.0), d.get("hi", 1.0))), 3)
 
+    es = hs = None
+    if fsample is not None and len(fsample):
+        es = np.asarray(fsample)[:, :htf_start] @ w[:htf_start]
+        hs = np.asarray(fsample)[:, htf_start:] @ w[htf_start:]
     cfg = {"w": w,
-           "thr": thresh("thr", float(w[:htf_start].sum())),
-           "htf": thresh("htf", float(w[htf_start:].sum())),
+           "thr": thresh("thr", float((w[:htf_start] * fs[:htf_start]).sum()),
+                         es),
+           "htf": thresh("htf", float((w[htf_start:] * fs[htf_start:]).sum()),
+                         hs),
            "stop": str(_draw(r, s["stop"])),
            "trail": str(_draw(r, s["trail"])),
            "fr": round(float(_draw(r, s["fr"])), 3),
@@ -137,11 +169,18 @@ def mutate_cfg(c, r, sp, K):
         if r.random() < m.get("weight_prob", 0.25):
             n["w"][i] = round(max(0.0, c["w"][i]
                                   + r.normal(0, m.get("weight_sigma", 0.8))), 2)
+    # Thresholds are perturbed PROPORTIONALLY, not by a fixed step. thr scales
+    # with the achievable score (~10 with the current factor stack, ~2 with a
+    # smaller one), so an absolute sigma of 0.4 is either a huge jump or a
+    # rounding error depending on how many factors exist. A fraction is
+    # scale-free and survives adding factors.
     if r.random() < m.get("thr_prob", 0.4):
         n["thr"] = round(max(0.0, c["thr"]
-                             + r.normal(0, m.get("thr_sigma", 0.4))), 2)
+                             * (1.0 + r.normal(0, m.get("thr_sigma", 0.25)))),
+                         3)
     if r.random() < m.get("htf_prob", 0.4):
-        n["htf"] = round(c["htf"] + r.normal(0, m.get("htf_sigma", 0.4)), 2)
+        n["htf"] = round(c["htf"]
+                         * (1.0 + r.normal(0, m.get("htf_sigma", 0.25))), 3)
     if r.random() < m.get("stop_prob", 0.2):
         n["stop"] = str(_draw(r, s["stop"]))
     if r.random() < m.get("trail_prob", 0.2):

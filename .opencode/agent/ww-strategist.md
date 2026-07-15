@@ -2,6 +2,7 @@
 description: Reads a WeissWave search-store summary and proposes the next search jobs
 mode: primary
 model: lmstudio/qwen3.5-4b
+temperature: 0
 tools:
   bash: false
   write: false
