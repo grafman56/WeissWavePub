@@ -11,7 +11,7 @@ cost haircut.
 Usage (mirrors test_strategy.py):
     python portfolio_sim.py --saved=tdi-adp-confluence --max-positions=5
     python portfolio_sim.py tdi_long,adp_bull_div --min-count=2 \
-        --filter=in_up_wave --stop=0.08 --hold=20 --cost-bps=10
+        --filter=in_up_wave --stop=0.08 --exit=wt_cross_down --cost-bps=10
 
 Extra options:
     --max-positions=N   concurrent position cap [5]
@@ -72,7 +72,10 @@ def main():
     args = sys.argv[1:]
     entry_cols, min_count, window, filter_col, stop, weights = \
         parse_config(args)
-    hold = int(arg(args, "hold", "20"))
+    # OFF by default -- see the same note in portfolio_multi/test_strategy. A
+    # clock is not an exit strategy; exits are stops / targets / trailing / a
+    # bearish reversal signal. --hold=N only to deliberately test a time exit.
+    hold = int(arg(args, "hold", "0"))
     interval = arg(args, "interval", "1d")
     months = int(arg(args, "months", "0"))
     cost_side = float(arg(args, "cost-bps", "0")) / 10000.0 / 2

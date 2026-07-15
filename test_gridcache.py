@@ -7,6 +7,7 @@ changes. No DB needed. Run: python test_gridcache.py (exit 0 = all pass)."""
 
 import ast
 import inspect
+import json
 import os
 import sys
 import tempfile
@@ -230,6 +231,30 @@ check("the pre-sig_params legacy name is dropped",
 check("alternating default/--space runs prune NOTHING (the actual bug)",
       prune(CUR, [CUR, SIBLING]) == [] and prune(SIBLING, [CUR, SIBLING]) == [],
       detail=f"{prune(CUR, [CUR, SIBLING])} / {prune(SIBLING, [CUR, SIBLING])}")
+
+
+# 5. NO CLOCK BY DEFAULT ------------------------------------------------------
+# "NEVER SELL FOR NO REASON JUST BECAUSE DAYS WENT BY THAT'S STUPID" -- Paul,
+# who has said it since 2026-07-13. A time exit dumps winners mid-trend; real
+# exits are stops, targets, trailing, or a bearish reversal signal. The fix
+# landed in portfolio_multi and the search space and MISSED test_strategy and
+# portfolio_sim, so the same strategy scored differently per tool and the
+# harness quietly amputated runners (tdi_long 1d/12mo: hold=20 -> avg +1.51%
+# PF 1.58; hold=0 -> avg +5.41% PF 2.11). Every tool that takes --hold is
+# pinned here so it cannot drift back in one of them again.
+import re  # noqa: E402
+
+for tool in ("test_strategy.py", "portfolio_multi.py", "portfolio_sim.py"):
+    src = open(tool, encoding="utf-8").read()
+    m = re.search(r'arg\(args,\s*"hold",\s*"(\d+)"\)', src)
+    check(f"{tool}: --hold defaults to 0 (no time clock)",
+          m is not None and m.group(1) == "0",
+          detail=f"default is {m.group(1) if m else 'NOT FOUND'}")
+
+_spec = json.load(open("search_space.json", encoding="utf-8"))
+check("search_space.json: sim.hold_bars is 0",
+      _spec.get("sim", {}).get("hold_bars") == 0,
+      detail=str(_spec.get("sim", {}).get("hold_bars")))
 
 
 if __name__ == "__main__":

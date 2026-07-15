@@ -18,7 +18,9 @@ Options (defaults in brackets):
     --filter=COL    regime gate column, or none [none]
     --exit=COLS     comma-separated exit signal columns, or none [none]
     --stop=F        stop-loss fraction [0.08]
-    --hold=N        max bars held [20]
+    --hold=N        max bars held; 0 = no time exit [0]. A clock is not an
+                    exit strategy -- use --exit=COLS (bearish reversal), --stop,
+                    --target. Pass --hold=N only to TEST a time exit as a value.
     --interval=I    bar interval [1d]
     --symbols=A,B   restrict universe (quick runs) [all]
     --months=N      test only the last N months (plus indicator warm-up);
@@ -335,7 +337,18 @@ def main():
 
     exit_arg = arg(args, "exit", None)
     exit_cols = [] if exit_arg in (None, "none", "") else exit_arg.split(",")
-    hold = int(arg(args, "hold", "20"))
+    # max-hold time exit: OFF by default. Exits should be stops / targets /
+    # trailing / a bearish reversal signal -- never a clock. Selling a winner
+    # because days elapsed is not an exit strategy. Pass --hold=N only to
+    # deliberately TEST a time exit as a value.
+    #
+    # This defaulted to 20 while portfolio_multi (fixed 2026-07-13) defaults to
+    # 0, so the same strategy scored differently depending on which tool ran it,
+    # and this one was quietly amputating the runners: on tdi_long 1d/12mo,
+    # hold=20 gives avg +1.51%/trade PF 1.58, hold=0 gives avg +5.41% PF 2.11.
+    # The clock raises the WIN RATE (53% vs 39%) by banking small wins early,
+    # which is exactly how it hides.
+    hold = int(arg(args, "hold", "0"))
     interval = arg(args, "interval", "1d")
     sym_arg = arg(args, "symbols", None)
     months = int(arg(args, "months", "0"))
