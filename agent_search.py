@@ -139,6 +139,14 @@ class Engine:
         self.hold_bars = np.full_like(self.st_hold,
                                       int(self.SIM.get("hold_bars", 0)))
         self.ext_arr = np.asarray(self.SIM["fib_ext"])
+        # conf_entry decides entries from the SCORE and never reads `ent`,
+        # where build_grid bakes the hard gate -- so gate_mode=hard was a
+        # silent no-op under confluence entry while the header printed the
+        # gate. hard enforces the rule; factor lets the search test it (which
+        # is the only way "catching the knife" is testable at all, since a hard
+        # gate vetoes a below-trend entry by definition). Both must work.
+        self.gate_hard = int(job["gate_mode"] == "hard"
+                             and job["gate"] not in (None, "", "none"))
         # typical magnitude per factor -- the threshold sampler needs it
         self.fscale = self.A.get("FSCALE")
         self.fsample = self.A.get("FSAMPLE")
@@ -234,7 +242,10 @@ class Engine:
             gate=A["GATE"][sl], factors=A["FACTORS"][sl], weights=c["w"],
             conf_entry=SIM["conf_entry"], conf_threshold=c["thr"],
             htf_start=HTF_START, htf_screen=SIM["htf_screen"],
-            htf_threshold=c["htf"])
+            htf_threshold=c["htf"],
+            # conf_entry never reads `ent`, where the hard gate is baked, so
+            # gate_mode=hard was silently a no-op under confluence entry
+            gate_hard=self.gate_hard)
         ntr = len(res["sym"])
         cagr = self._cagr(res, yrs)
         rr = [A["C"][sl][:, s2][V[sl][:, s2]]

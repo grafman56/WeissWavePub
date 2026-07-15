@@ -63,7 +63,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
               trail_act, trail_dist, trail_mode, use_fib_target, fib_ext,
               fib_entry, fib_zone_lo, fib_zone_hi, fib_bounce_look,
               factors, weights, conf_entry, conf_threshold, conf_size,
-              htf_start, htf_screen, htf_threshold,
+              htf_start, htf_screen, htf_threshold, gate_hard,
               cost_side, max_pos, init_cash):
     T, S = open2d.shape
     cash = init_cash
@@ -182,8 +182,20 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                     continue
                 if conf_entry:
                     e, h = _conf_scores(factors, weights, t, s, htf_start, K)
-                    base_ok = e >= conf_threshold and (
-                        htf_screen == 0 or h >= htf_threshold)
+                    # gate_hard: the trend gate ANDs the confluence score.
+                    # conf_entry ignores `ent`, which is where build_grid bakes
+                    # the hard gate (`ent = combine_signals(...) & g`) -- so
+                    # --gate-mode=hard was SILENTLY IGNORED under --conf-entry
+                    # while the header still printed the gate. That broke
+                    # build_grid's own contract ("a bar outside the daily
+                    # uptrend can never be an entry") and it cannot be fixed by
+                    # weighting w_trend instead: a weighted sum cannot express
+                    # AND, and a big w_trend makes the trend necessary AND
+                    # SUFFICIENT (entries on any in-trend bar with zero signal).
+                    # hard enforces the rule; factor tests it. Both must work.
+                    base_ok = (e >= conf_threshold
+                               and (htf_screen == 0 or h >= htf_threshold)
+                               and (gate_hard == 0 or gate[t - 1, s] > 0.5))
                 elif trend_only:
                     base_ok = gate[t - 1, s] > 0.5
                 else:
@@ -199,8 +211,11 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                         continue
                     if conf_entry:
                         e, h = _conf_scores(factors, weights, t, s, htf_start, K)
+                        # must match the candidate-count test above exactly, or
+                        # ncand and the fill loop disagree
                         if e < conf_threshold or (
-                                htf_screen != 0 and h < htf_threshold):
+                                htf_screen != 0 and h < htf_threshold) or (
+                                gate_hard != 0 and gate[t - 1, s] <= 0.5):
                             continue
                         cs[k] = s; sc[k] = e; k += 1
                     elif (gate[t - 1, s] > 0.5 if trend_only
@@ -338,7 +353,8 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
              2.0), gate=None, fib_entry=FIB_ENTRY_OFF, fib_zone_lo=0.5,
              fib_zone_hi=0.786, fib_bounce_look=3,
              factors=None, weights=None, conf_entry=0, conf_threshold=1.0,
-             conf_size=0, htf_start=-1, htf_screen=0, htf_threshold=0.0):
+             conf_size=0, htf_start=-1, htf_screen=0, htf_threshold=0.0,
+             gate_hard=0):
     """Python wrapper: ensures dtypes/contiguity, runs the njit core.
     Returns dict with sym, ret, reason, bars (per-trade) and equity/invested
     (per-bar). All 2D inputs are (T, S) float64/bool; strat_* are 1D per
@@ -377,6 +393,7 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
                     fac, wts, int(conf_entry), float(conf_threshold),
                     int(conf_size),
                     hstart, int(htf_screen), float(htf_threshold),
+                    int(gate_hard),
                     float(cost_side), int(max_pos), float(init_cash))
     sym, ret, reason, bars, strat, equity, invested, n_open = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,

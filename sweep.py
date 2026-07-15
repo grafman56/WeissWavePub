@@ -54,7 +54,10 @@ import pandas as pd
 from portfolio_multi import (BOT_FILE, FACTOR_NAMES, FIB_ENTRY_MODES,
                              HTF_START, STOP_MODES, TRAIL_MODES,
                              prepare_grid_cached)
-from test_strategy import arg, fail
+from test_strategy import arg, fail, parse_gates
+
+
+from weisswave import portsim
 
 
 def _trail_label(tmode, ta, td):
@@ -75,7 +78,6 @@ def _trail_label(tmode, ta, td):
     if ta > 0:
         return f"{ta:.0%}/{td:.0%}"
     return f"0%/{td:.0%}" if tmode != "pct" else "-"
-from weisswave import portsim
 
 
 def listarg(args, name, default, cast):
@@ -219,11 +221,20 @@ def _sweep(args, shard=None):
         "hold": listarg(args, "hold", [0], int),
     }
 
+    # HOW the gate reaches the engine. prepare_grid_cached defaulted this to
+    # "hard" and sweep never exposed it, so gate_mode=factor -- Paul's
+    # gate-as-a-dial -- was unreachable from the tool that runs the most
+    # configs. It is in the grid cache key, so switching rebuilds correctly.
+    gate_mode = arg(args, "gate-mode", "hard")
+    if gate_mode not in ("hard", "factor"):
+        fail(f"--gate-mode must be 'hard' or 'factor', got {gate_mode!r}")
+    gates_on = bool(parse_gates(gate))
+
     t0 = time.time()
     (A, V, ENT, SIDX, EXT, syms, grid, st_stop, st_hold, st_tgt), cached = \
         prepare_grid_cached(strategies, interval, gate, market, months,
                             atr_len=atr_len, swing_look=swing_look, fib=fib,
-                            universe=universe)
+                            universe=universe, gate_mode=gate_mode)
     build_s = time.time() - t0
 
     def sim_metrics(Ax, Vx, ENTx, SIDXx, EXTx, gridx,
@@ -246,7 +257,9 @@ def _sweep(args, shard=None):
             fib_zone_hi=fib_zone_hi, fib_bounce_look=fib_bounce_look,
             factors=Ax["FACTORS"], weights=wvec, conf_entry=conf_entry,
             conf_threshold=thr, conf_size=conf_size, htf_start=HTF_START,
-            htf_screen=htf_screen, htf_threshold=htf_thr)
+            htf_screen=htf_screen, htf_threshold=htf_thr,
+            # conf_entry never reads `ent`, where the hard gate is baked
+            gate_hard=int(gate_mode == "hard" and gates_on))
         eq = pd.Series(res["equity"]); r = res["ret"]; n = len(r)
         cagr = round(((eq.iloc[-1] / capital) ** (1 / yrs) - 1) * 100, 1)
         # buy & hold benchmark: equal-weight hold of the names THIS config

@@ -732,6 +732,17 @@ def main():
         fail("no strategies selected")
 
     gates = parse_gates(gate_arg)
+    # HOW the trend gate reaches the engine -- a CHOICE, not a law.
+    #   hard   : the gate is a veto. A bar outside the trend can never enter.
+    #   factor : the gate is left off the signal and the trend travels only via
+    #            the `trend` factor, so w_trend decides how much it matters.
+    # This flag existed in build_grid and in agent_search and was NEVER READ
+    # HERE -- main() called build_grid without it, so portfolio_multi was
+    # always "hard" and --gate-mode=factor was silently ignored. Paul's
+    # gate-as-a-dial was reachable from exactly one of three tools.
+    gate_mode = arg(args, "gate-mode", "hard")
+    if gate_mode not in ("hard", "factor"):
+        fail(f"--gate-mode must be 'hard' or 'factor', got {gate_mode!r}")
 
     market = arg(args, "market", "sma100")      # market-regime filter; none to disable
     cutoff = (pd.Timestamp.now() - pd.DateOffset(months=months)
@@ -774,7 +785,8 @@ def main():
         frames = attach_htf(frames)
         A, V, ENT, SIDX, EXT, syms, master, st_stop, st_hold, st_tgt = \
             build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
-                       atr_len, swing_look, fib["left"], fib["right"])
+                       atr_len, swing_look, fib["left"], fib["right"],
+                       gate_mode=gate_mode)
         res = portsim.simulate(
             A["O"], A["H"], A["L"], A["C"], V, ENT, A["SCORE"], SIDX, EXT,
             A["ATR"], A["SW"], st_stop, st_hold, st_tgt,
@@ -790,7 +802,13 @@ def main():
             factors=A["FACTORS"], weights=weights, conf_entry=conf_entry,
             conf_threshold=conf_threshold, conf_size=conf_size,
             htf_start=HTF_START, htf_screen=htf_screen,
-            htf_threshold=htf_threshold)
+            htf_threshold=htf_threshold,
+            # conf_entry decides entries from the SCORE and never reads `ent`,
+            # which is where build_grid bakes the hard gate. Without this the
+            # gate silently evaporated under --conf-entry while the header
+            # still printed it. Only meaningful when a gate exists AND the user
+            # asked for it to be a veto.
+            gate_hard=int(gate_mode == "hard" and bool(gates)))
         why = {1: "stop", 2: "trail", 3: "target", 4: "signal", 5: "time",
                6: "eod"}
         trades = [{"symbol": syms[res["sym"][i]],
