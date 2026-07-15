@@ -95,6 +95,28 @@
       "scale": 20,
       "_doc": "IS THE OSCILLATOR TURNING? Not used anywhere today -- d(wt1) is computed by nothing. A cross at -300 still falling and a cross at -65 turning up are opposite setups wearing the same boolean. COMPOSES WITH wt_depth: depth x slope as two weights is 'deep AND turning', which is Paul's never-catch-a-falling-knife rule expressed as a dial rather than a law -- and unlike a hard trend gate it does NOT veto the knife by construction, so it is testable. `bars` and `scale` are DATA; bars=1 is a starting point, not a setting."
     },
+    "div_bull_osc": {
+      "op": "spread",
+      "a": "wt_bull_div_osc",
+      "b": 0,
+      "scale": 20,
+      "_doc": "HOW HARD the bullish divergence diverged, in oscillator units. Paul's Pine: `regular_bullish_div1 = fractal_bot1 and low[2] < low_price1 and wt1[2] > low_prev1` -- that last `>` is a boolean whose DISTANCE is right there and gets discarded. Measured over 25 symbols of 1d, the bearish twin runs from 'osc lower by 1.3' (10th pct) to 'lower by 99.6' (max): ~20x, all the same True. 0 = no divergence on this bar (NaN off the fractal bars, and compile_factor zeroes it) -- so 0 means ABSENT, not weak. `scale` is DATA."
+    },
+    "div_bull_px": {
+      "op": "spread",
+      "a": "wt_bull_div_px",
+      "b": 0,
+      "scale": 0.05,
+      "_doc": "The other half: how much LOWER price went while the oscillator held up. Pine's `low[2] < low_price1`, again a boolean over a real distance. 10th pct 0.22%, 90th 4.90%, max 23.04%. Emitted as a fraction so scale=0.05 is 5%. Composes with div_bull_osc: a big price move against a big oscillator move is the strong version; both a hair is a technicality that happens to clear the `>`. Whether size matters at all is Paul's question, not mine -- the weight answers it."
+    },
+    "div_bear_osc": {
+      "op": "spread",
+      "a": "wt_bear_div_osc",
+      "b": 0,
+      "scale": 20,
+      "sign": -1,
+      "_doc": "Bearish divergence strength. sign=-1 because a bearish divergence argues AGAINST a long. Legitimate here: 0 means no divergence and -1 x 0 is still 0, so absent bars stay neutral rather than scoring maximum (the trap pivot_confirm's docstring warns about)."
+    },
     "_doc_indicators": [
       "INDICATOR COMBINATIONS ARE NOW SEARCHED, not chosen. Each indicator below is its own weighted factor, so WHICH COMBINATION fires is decided by WHICH WEIGHTS ARE NON-ZERO -- w=0 means that indicator is out of the strategy. The search discovers 'tdi_long + adp_bull_div' instead of being handed it in bot_strategies.json, and conf_threshold decides how many must agree.",
       "This is 'weights not gates' taken all the way down. It is also cheap: every factor precomputes into ONE grid and the weights sweep at sim time.",
