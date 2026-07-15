@@ -17,7 +17,8 @@ Options (defaults in brackets):
     --window=N      confluence window in bars [5]
     --filter=COL    regime gate column, or none [none]
     --exit=COLS     comma-separated exit signal columns, or none [none]
-    --stop=F        stop-loss fraction [0.08]
+    --stop=F        stop-loss fraction [0.10]
+    --target=F      take-profit fraction, or none [0.10]
     --hold=N        max bars held; 0 = no time exit [0]. A clock is not an
                     exit strategy -- use --exit=COLS (bearish reversal), --stop,
                     --target. Pass --hold=N only to TEST a time exit as a value.
@@ -358,7 +359,7 @@ def main():
         filter_col = arg(args, "filter", None)
         if filter_col in ("none", ""):
             filter_col = None
-        stop = float(arg(args, "stop", "0.08"))
+        stop = float(arg(args, "stop", "0.10"))
         w_arg = arg(args, "weights", None)      # e.g. tdi_long:2,golden:1
         weights = ({p.split(":")[0]: int(p.split(":")[1])
                     for p in w_arg.split(",")} if w_arg else None)
@@ -383,7 +384,7 @@ def main():
     cost = float(arg(args, "cost-bps", "0")) / 10000.0
     # trend gate is ON by default (trade with the trend); --gate=none to disable
     gate_arg = arg(args, "gate", "sma50_over_200@1d")
-    target = arg(args, "target", None)
+    target = arg(args, "target", "0.10")
     target = float(target) if target not in (None, "none", "") else None
     gates = parse_gates(gate_arg)   # [(col, interval), ...]; all ANDed
 

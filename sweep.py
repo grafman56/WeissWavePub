@@ -191,7 +191,7 @@ def _sweep(args, shard=None):
         # Sweep --trail-activate=0 to test no-trailing deliberately.
         "ta": listarg(args, "trail-activate", [0.10], float),
         "td": listarg(args, "trail-dist", [0.03], float),
-        "tgt": listarg(args, "target", [0.0], float),
+        "tgt": listarg(args, "target", [0.10], float),
         "mp": listarg(args, "max-positions", [5], int),
         # max-hold time exit: OFF by default (0). Exits should come from
         # stops / targets / trailing / reversal -- never a clock. Sweepable

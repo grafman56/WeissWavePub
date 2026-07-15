@@ -645,7 +645,7 @@ def main():
     max_pos = int(arg(args, "max-positions", "5"))
     capital = float(arg(args, "capital", "100000"))
     months = int(arg(args, "months", "0"))
-    gtarget = arg(args, "target", None)
+    gtarget = arg(args, "target", "0.10")
     gtarget = float(gtarget) if gtarget not in (None, "none", "") else None
     gstop = arg(args, "stop", None)
     gstop = float(gstop) if gstop not in (None, "none", "") else None

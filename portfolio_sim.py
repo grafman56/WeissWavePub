@@ -11,7 +11,7 @@ cost haircut.
 Usage (mirrors test_strategy.py):
     python portfolio_sim.py --saved=tdi-adp-confluence --max-positions=5
     python portfolio_sim.py tdi_long,adp_bull_div --min-count=2 \
-        --filter=in_up_wave --stop=0.08 --exit=wt_cross_down --cost-bps=10
+        --filter=in_up_wave --stop=0.10 --exit=wt_cross_down --cost-bps=10
 
 Extra options:
     --max-positions=N   concurrent position cap [5]
@@ -65,7 +65,7 @@ def parse_config(args):
                 for p in w_arg.split(",")} if w_arg else None)
     return (positional[0].split(","), int(arg(args, "min-count", "1")),
             int(arg(args, "window", "5")), filter_col,
-            float(arg(args, "stop", "0.08")), weights)
+            float(arg(args, "stop", "0.10")), weights)
 
 
 def main():
@@ -82,7 +82,7 @@ def main():
     max_pos = int(arg(args, "max-positions", "5"))
     capital = float(arg(args, "capital", "100000"))
     gate_arg = arg(args, "gate", "sma50_over_200@1d")    # trend gate ON by default
-    target = arg(args, "target", None)
+    target = arg(args, "target", "0.10")
     target = float(target) if target not in (None, "none", "") else None
     exit_arg = arg(args, "exit", None)
     exit_cols = [] if exit_arg in (None, "none", "") else exit_arg.split(",")
