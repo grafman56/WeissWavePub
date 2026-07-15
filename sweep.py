@@ -55,6 +55,26 @@ from portfolio_multi import (BOT_FILE, FACTOR_NAMES, FIB_ENTRY_MODES,
                              HTF_START, STOP_MODES, TRAIL_MODES,
                              prepare_grid_cached)
 from test_strategy import arg, fail
+
+
+def _trail_label(tmode, ta, td):
+    """What the ENGINE will actually do, not what trail-activate looks like.
+
+    portsim: `do_trail = (trail_mode != TRAIL_PCT) or (trail_act > 0.0)`.
+    structure/fib trail whenever selected -- they anchor to structure, so they
+    need no activation threshold -- while pct needs trail_act > 0. So
+    trail-activate=0 means OFF for pct and ON-FROM-ENTRY for structure/fib.
+
+    This printed "-" whenever ta == 0 regardless of mode, so a structure or fib
+    row showed "no trail" while a trail was running. That is why `structure -`
+    (17.0% CAGR, 95 trades) and `pct -` (24.4%, 83) disagreed in a sweep where
+    the trail was supposedly off in both: it was off in one and on in the other.
+    Reporting a knob you did not apply is the same failure as reporting a trade
+    that never fired.
+    """
+    if ta > 0:
+        return f"{ta:.0%}/{td:.0%}"
+    return f"0%/{td:.0%}" if tmode != "pct" else "-"
 from weisswave import portsim
 
 
@@ -272,8 +292,9 @@ def _sweep(args, shard=None):
              wvec)
         row = {
             "stop": sm, "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
-            "tmode": tm, "ftgt": ftg, "entry": fe, "trail": f"{ta:.0%}/{td:.0%}"
-            if ta > 0 else "-", "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp,
+            "tmode": tm, "ftgt": ftg, "entry": fe,
+            "trail": _trail_label(tm, ta, td),
+            "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp,
             "hold": hd}
         if conf_entry:
             row["thr"] = thr
