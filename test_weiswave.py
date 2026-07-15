@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 
+from weisswave.core import falling, rising
 from weisswave.weiswave import weis_wave, OPP_UP_CAP, OPP_DOWN_CAP
 from weisswave.signals import build_signals
 
@@ -15,6 +16,75 @@ def make_df(closes, volumes=None):
         "Open": closes, "High": closes * 1.01, "Low": closes * 0.99,
         "Close": closes, "Volume": volumes,
     }, index=pd.bdate_range("2025-01-01", periods=n))
+
+
+def test_rising_is_monotonic_not_a_breakout():
+    # THE regression test. BTC-USD 2025-03-23: closes ran 84,089 -> 83,841 ->
+    # 86,082. The last bar is a strong up-bar that clears the prior high, so a
+    # "greater than the max of the last N bars" BREAKOUT test calls it rising.
+    # Pine's rising() is monotonic -- 83,841 < 84,089 breaks the chain -- so it
+    # says NOT rising. The two definitions disagree on exactly this shape, and
+    # the wrong one shipped: it flipped the wave and reset volumedn to 1.0x
+    # when Paul's chart shows it accumulating at 6.1x. Pine wins.
+    s = pd.Series([84500.0, 84089.0, 83841.0, 86082.0])
+    assert not bool(rising(s, 2).iloc[-1]), \
+        "dip-then-spike is NOT monotonically rising"
+    # spell the discredited definition out, so this test fails loudly if anyone
+    # ever "fixes" rising() back into a breakout test
+    breakout = s > s.shift(1).rolling(2).max()
+    assert bool(breakout.iloc[-1]), \
+        "the old breakout definition passed this bar -- that was the bug"
+    print("test_rising_is_monotonic_not_a_breakout OK")
+
+
+def test_rising_accepts_a_clean_run():
+    s = pd.Series([100.0, 101.0, 102.0, 103.0])
+    r = rising(s, 2)
+    assert bool(r.iloc[-1]) and bool(r.iloc[2])
+    print("test_rising_accepts_a_clean_run OK")
+
+
+def test_rising_length_counts_comparisons():
+    # rising(s, N) is N comparisons spanning N+1 bars -- the same convention as
+    # Pine, and what makes pullback=2 mean "close > close[1] > close[2]".
+    s = pd.Series([100.0, 99.0, 100.5, 101.0, 102.0])
+    assert bool(rising(s, 3).iloc[-1]), "three up-comparisons in a row"
+    assert not bool(rising(s, 4).iloc[-1]), \
+        "the 4th comparison reaches back to the down-bar and must fail"
+    print("test_rising_length_counts_comparisons OK")
+
+
+def test_rising_rejects_flat_and_warmup_is_false():
+    assert not rising(pd.Series([100.0] * 5), 2).any(), "flat is not rising"
+    r = rising(pd.Series([100.0, 101.0, 102.0]), 2)
+    assert r.dtype == bool, "must be a real bool, never NaN leaking into a gate"
+    assert not bool(r.iloc[0]) and not bool(r.iloc[1]), "warm-up is False"
+    assert bool(r.iloc[2])
+    print("test_rising_rejects_flat_and_warmup_is_false OK")
+
+
+def test_falling_mirrors_rising():
+    s = pd.Series([100.0, 99.0, 98.0, 97.0])
+    assert bool(falling(s, 2).iloc[-1]) and not bool(rising(s, 2).iloc[-1])
+    # the BTC bar's mirror image: a bounce then a plunge is not monotonic
+    s2 = pd.Series([84500.0, 84089.0, 84500.0, 80000.0])
+    assert not bool(falling(s2, 2).iloc[-1]), \
+        "bounce-then-plunge is NOT monotonically falling"
+    print("test_falling_mirrors_rising OK")
+
+
+def test_dip_then_spike_holds_wave_and_accumulates_volumedn():
+    # Why any of the above matters. rising() feeds isTrending, which decides
+    # when the wave FLIPS, which decides whether volumeup/volumedn accumulate
+    # or reset. This is the 1.0x-vs-6.1x gap Paul's chart caught, in miniature.
+    closes = list(np.linspace(120, 100, 10)) + [99.0, 101.5]
+    df = make_df(closes)
+    ww = weis_wave(df, pullback=2)
+    assert ww["wave"].iloc[-1] == -1, \
+        "a dip-then-spike must not flip the down wave"
+    assert ww["volumedn"].iloc[-1] > df["Volume"].iloc[-1], \
+        "volumedn must still be accumulating, not reset to this bar's volume"
+    print("test_dip_then_spike_holds_wave_and_accumulates_volumedn OK")
 
 
 def test_wave_flips_and_volume():
@@ -71,6 +141,12 @@ def test_signals_no_nan_bools():
 
 
 if __name__ == "__main__":
+    test_rising_is_monotonic_not_a_breakout()
+    test_rising_accepts_a_clean_run()
+    test_rising_length_counts_comparisons()
+    test_rising_rejects_flat_and_warmup_is_false()
+    test_falling_mirrors_rising()
+    test_dip_then_spike_holds_wave_and_accumulates_volumedn()
     test_wave_flips_and_volume()
     test_opp_counts_and_caps()
     test_volume_seeding()
