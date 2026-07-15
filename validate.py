@@ -48,7 +48,7 @@ from search_space import bootstrap_space      # must precede the imports below
 bootstrap_space(sys.argv[1:])
 
 from agent_search import (Engine, _worker_init,             # noqa: E402
-                          _worker_score, evolve, parse_job)
+                          _worker_score, cap_jobs, evolve, parse_job)
 from portfolio_multi import FACTOR_NAMES
 from sweep import RESULTS_DIR, save_results
 from search_space import space_sig
@@ -104,7 +104,12 @@ def main():
         print("not enough history for that many outer folds")
         return
 
-    jobs = max(1, job["jobs"])
+    # Every worker holds its OWN copy of the grid, so RAM is jobs x grid_bytes.
+    # agent_search caps this and validate did not -- while this file's own
+    # docstring recommends --jobs=8. Harmless on a 12-symbol crypto grid
+    # (~0.1GB); on a ~500-symbol stocks grid that is ~37GB and the machine does
+    # not refuse, it thrashes and dies. Same cap, one implementation.
+    jobs = cap_jobs(max(1, job["jobs"]), eng)
     pool = (mp.Pool(jobs, initializer=_worker_init, initargs=(args,))
             if jobs > 1 else None)
     print(f"NESTED walk-forward: {len(ofolds)} outer folds, mode={mode}, "
