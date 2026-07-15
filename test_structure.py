@@ -117,6 +117,58 @@ check(f"trend_points prefix recompute == full ({tot} points, no lookahead)",
       mism == 0, f"{mism} mismatches")
 
 
+# 3b. direction ---------------------------------------------------------------
+# Paul: "if you want to look for a 'downtrend' you start high, so the points are
+# swing high, low, high. If you want to look for an uptrend you start low, so
+# swing low, high, low." The direction was hardcoded to "up", so his BTC-style
+# bearish anchors were inexpressible. Same formula; only the point selection
+# mirrors, and (p2-p1) flips sign on its own.
+check("default is still 'up' (no behaviour change)",
+      all(approx(a, b) or (pd.isna(a) and pd.isna(b)) for a, b in
+          zip(trend_points(tp_high, tp_low, 2, 2)[1],
+              trend_points(tp_high, tp_low, 2, 2, direction="up")[1])))
+
+# mirror fixture: pivot high 30 @idx2, pivot low 8 @idx8, pivot high 25 @idx14
+dn_high = pd.Series([26, 27, 30, 26, 24, 21, 18, 15, 12, 13, 15, 17, 19, 21,
+                     25, 23, 22, 21, 20], dtype=float)
+dn_low = pd.Series([25, 26, 29, 25, 23, 20, 17, 14, 8, 12, 14, 16, 18, 20,
+                    24, 22, 21, 20, 19], dtype=float)
+D1, D2, D3 = trend_points(dn_high, dn_low, 2, 2, direction="down")
+check("down: point1 = leg-start swing HIGH (30)", approx(D1.iloc[16], 30.0),
+      f"D1[16]={D1.iloc[16]}")
+check("down: point2 = swing LOW (8)", approx(D2.iloc[16], 8.0),
+      f"D2[16]={D2.iloc[16]}")
+check("down: point3 = rally HIGH after the low (25)", approx(D3.iloc[16], 25.0),
+      f"D3[16]={D3.iloc[16]}")
+check("down: (p2-p1) is NEGATIVE, so extensions project DOWN",
+      D2.iloc[16] - D1.iloc[16] < 0)
+check("down: point3 is NaN before the rally high confirms (idx12)",
+      pd.isna(D3.iloc[12]) and approx(D1.iloc[12], 30.0)
+      and approx(D2.iloc[12], 8.0))
+
+# the no-lookahead property must hold for the mirror too, not just the default
+r1, r2, r3 = trend_points(h, lo, 5, 5, direction="down")
+mism_d = tot_d = 0
+for t in range(60, 400, 23):
+    b1, b2, b3 = trend_points(h.iloc[:t + 1], lo.iloc[:t + 1], 5, 5,
+                              direction="down")
+    for full, pre in ((r1, b1), (r2, b2), (r3, b3)):
+        tot_d += 1
+        fv, pv = full.iloc[t], pre.iloc[t]
+        if pd.isna(fv) and pd.isna(pv):
+            continue
+        if pd.isna(fv) or pd.isna(pv) or not approx(fv, pv, 1e-9):
+            mism_d += 1
+check(f"down: prefix recompute == full ({tot_d} points, no lookahead)",
+      mism_d == 0, f"{mism_d} mismatches")
+
+try:
+    trend_points(tp_high, tp_low, 2, 2, direction="sideways")
+    check("a bad direction raises", False)
+except ValueError:
+    check("a bad direction raises", True)
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL STRUCTURE TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))

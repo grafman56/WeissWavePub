@@ -16,18 +16,43 @@ from .divergence import pine_pivot_high, pine_pivot_low
 
 
 def trend_points(high: pd.Series, low: pd.Series, lbL: int = 10,
-                 lbR: int = 10):
-    """The three anchors of a Fibonacci trend move, lookahead-free:
+                 lbR: int = 10, direction: str = "up"):
+    """The three anchors of a Fibonacci trend move, lookahead-free.
 
-      point1 = the swing low that STARTED the last up-leg (leg-start low)
-      point2 = the last confirmed swing HIGH (leg top)
-      point3 = the swing low AFTER that high (the pullback low), or NaN until
-               a pullback low has confirmed.
+    A fib trend extension is what it sounds like -- Paul: "if you want to look
+    for a 'downtrend' you start high, so the points are swing high, low, high.
+    If you want to look for an uptrend you start low, so swing low, high, low."
+    The DIRECTION is the whole choice, and it was hardcoded to "up".
 
-    Retracements/zone/stop anchor point1 -> point2 (the up-leg being retraced).
+      direction="up"   (leg-start LOW -> leg-top HIGH -> pullback LOW)
+        point1 = the swing low that STARTED the last up-leg
+        point2 = the last confirmed swing HIGH (leg top)
+        point3 = the swing low AFTER that high (the pullback low)
+        -> (point2 - point1) is POSITIVE, so extensions project UP from point3.
+
+      direction="down" (leg-start HIGH -> leg-bottom LOW -> rally HIGH)
+        point1 = the swing high that STARTED the last down-leg
+        point2 = the last confirmed swing LOW (leg bottom)
+        point3 = the swing high AFTER that low (the rally high)
+        -> (point2 - point1) is NEGATIVE, so extensions project DOWN from point3.
+
+    Verified against Paul's charts, same symbol, both directions, same formula:
+      TSLA up  : 139.98 -> 489.50 -> 218.36  (p2-p1 = +349.52)
+                 0=218.36  0.382=351.88  0.786=493.08     exact
+      TSLA down: 272.40 -> 183.77 -> 490.04  (p2-p1 =  -88.63)
+                 0=490.04  0.382=456.18  1.272=377.29  4=135.48   exact
+      BTC  down: 107,244.8 -> 74,475.0 -> 125,887.2  -> every level to 0.1
+
+    "down" is NOT only for shorting. Those levels answer "where does this
+    decline stop", which is a LONG entry question -- BTC spent a year trading
+    between its 1.272 and its 2.
+
+    Retracements/zone/stop anchor point1 -> point2 (the leg being retraced).
     Extensions project (point2 - point1) from point3. Each series is NaN until
     the relevant pivots have confirmed, so a bar t depends only on bars <= t
     (test_structure.py proves it via prefix recompute)."""
+    if direction not in ("up", "down"):
+        raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
     ph = pine_pivot_high(high, lbL, lbR)
     pl = pine_pivot_low(low, lbL, lbR)
     ph_price = high.shift(lbR).where(ph).ffill()
@@ -35,9 +60,17 @@ def trend_points(high: pd.Series, low: pd.Series, lbL: int = 10,
     ipos = pd.Series(np.arange(len(high), dtype=float), index=high.index)
     last_ph_i = ipos.where(ph).ffill()
     last_pl_i = ipos.where(pl).ffill()
-    point2 = ph_price                              # last confirmed swing high
-    point1 = pl_price.where(ph).ffill()            # the pivot low as of that high
-    point3 = pl_price.where(last_pl_i > last_ph_i)  # pullback low after the high
+    # The two directions are mirror images: swap which pivot is the leg END
+    # (point2) and which supplies the bracketing anchors (point1/point3).
+    if direction == "up":
+        end, end_px, end_i = ph, ph_price, last_ph_i    # leg TOP
+        opp_px, opp_i = pl_price, last_pl_i             # the lows around it
+    else:
+        end, end_px, end_i = pl, pl_price, last_pl_i    # leg BOTTOM
+        opp_px, opp_i = ph_price, last_ph_i             # the highs around it
+    point2 = end_px                            # last confirmed leg-end pivot
+    point1 = opp_px.where(end).ffill()         # the opposite pivot as of it
+    point3 = opp_px.where(opp_i > end_i)       # the reaction pivot after it
     return point1, point2, point3
 
 
