@@ -140,11 +140,31 @@ def build_grid(frames, strategies, exit_cols, gstop, ghold, gtarget,
     ENT = np.zeros((T, S), bool)
     SIDX = np.zeros((T, S), np.int64)
     EXT = np.zeros((T, S), bool)
-    st_stop = np.array([gstop or float(s.get("stop_pct", 0.08))
+    # ONE IDIOM FOR ALL THREE: an explicit CLI value WINS; absent (None) falls
+    # back to the strategy file. These were three different idioms and two were
+    # wrong:
+    #
+    #   st_stop = gstop or float(...)          FALSY. --stop=0 is a real value
+    #                                          (a stop AT entry) and silently
+    #                                          became the strategy's stop.
+    #   st_tgt  = s.get("target", gtarget)     PRECEDENCE INVERTED. The strategy
+    #                                          BEAT the CLI, opposite to stop and
+    #                                          hold. It only ever worked because
+    #                                          0 of 6 strategies define a target;
+    #                                          the day one did, --target would
+    #                                          silently die for it.
+    #   st_hold = ghold if ghold is not None   correct, and now the template.
+    #
+    # `is not None` is the whole point: 0 is a legitimate value for every one of
+    # these (hold=0 is Paul's permanent rule), and `or` cannot tell 0 from unset.
+    st_stop = np.array([float(gstop) if gstop is not None
+                        else float(s.get("stop_pct", 0.08))
                         for s in strategies])
     st_hold = np.array([ghold if ghold is not None else int(s.get("hold", 0))
                         for s in strategies], np.int64)
-    st_tgt = np.array([(s.get("target", gtarget) or 0.0) for s in strategies])
+    st_tgt = np.array([float(gtarget) if gtarget is not None
+                       else float(s.get("target", 0.0))
+                       for s in strategies])
 
     for j, sname in enumerate(syms):
         sig = frames[sname]

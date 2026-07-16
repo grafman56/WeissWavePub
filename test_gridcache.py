@@ -560,6 +560,36 @@ check("both tools read --stop",
              "pin that checks only one spelling is a green light with no bulb")
 
 
+# 10. ONE OVERRIDE IDIOM: CLI WINS, ABSENT FALLS BACK ------------------------
+# build_grid had three idioms for the same job and two were wrong:
+#   st_stop = gstop or float(...)        FALSY -- --stop=0 is a real value (a
+#                                        stop AT entry) and silently became the
+#                                        strategy's stop_pct.
+#   st_tgt  = s.get("target", gtarget)   PRECEDENCE INVERTED -- the strategy BEAT
+#                                        the CLI, opposite to stop and hold. It
+#                                        worked only because 0 of 6 strategies
+#                                        define a target. The day one did,
+#                                        --target would silently die for it.
+#   st_hold = ghold if ghold is not None else ...   correct.
+# `or` cannot tell 0 from unset, and 0 is legitimate for all three -- hold=0 is
+# the permanent rule.
+# CODE ONLY. The comment above build_grid QUOTES the old broken lines to explain
+# them, so grepping raw source flags the explanation as the offence -- which is
+# exactly what happened when this was written, and exactly why _code_only exists
+# for the parse_gates check below. ast.unparse drops comments; it keeps the code.
+_bg = ast.unparse(ast.parse(inspect.getsource(pm.build_grid)))
+for name in ("gstop", "ghold", "gtarget"):
+    check(f"build_grid: {name} uses `is not None`, not a falsy `or`",
+          re.search(rf'if {name} is not None', _bg) is not None,
+          detail="0 must be distinguishable from unset")
+check("build_grid: no falsy `X or float(...)` override survives",
+      "gstop or float(" not in _bg and "gtarget or " not in _bg)
+check("build_grid: the CLI target is not overridden BY the strategy file",
+      "s.get('target', gtarget)" not in _bg
+      and 's.get("target", gtarget)' not in _bg,
+      detail="s.get('target', gtarget) makes the strategy file beat the CLI")
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL GRID-CACHE TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))
