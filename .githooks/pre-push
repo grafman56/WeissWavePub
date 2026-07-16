@@ -1,15 +1,30 @@
 #!/bin/sh
 # Refuse to push Paul's proprietary suite to a PUBLIC remote.
 #
-# WHY THIS EXISTS. From 2026-07-16 the private repo TRACKS combined.py,
-# strategies.json and bot_strategies.json so PC2 can pull them. WeissWavePub is
-# public and holds a snapshot of the history taken BEFORE that. The two have
-# forked, and from here on `git push public main` is a LEAK -- not a warning, a
-# leak, because once a blob is in a public history `git rm` does not remove it.
+# THIS IS THE SECOND LINE OF DEFENCE, NOT THE FIRST.
 #
-# The failure mode this guards is not carelessness. It is muscle memory: `git
-# push` is the most automatic command there is, and the only thing separating a
-# normal push from publishing his life's work is which remote name you typed.
+# The first is that THIS WORKING COPY HAS NO PUBLIC REMOTE. `git remote -v` is
+# origin only (GitLab -> private GitHub mirror). `git push public` fails with
+# "does not appear to be a git repository" because there is nothing to push to.
+# Paul's call, 2026-07-16, and he was right: "why not just make a gitlab public
+# repo and mirror that? so its completely separate?" -- the instinct being that
+# separation beats guarding. Removing the remote removes the dangerous command;
+# a hook only stands in front of one. Since remotes live in .git/config and are
+# NOT tracked, a fresh clone inherits the safe state for free.
+#
+# So this hook exists for the case where someone (PC2, future me, a habit) adds
+# a public remote back. Then it catches what the missing remote no longer can.
+#
+# WHY IT MATTERS. From 2026-07-16 the private repo TRACKS combined.py,
+# strategies.json and bot_strategies.json so PC2 can pull them. WeissWavePub is
+# public and holds a snapshot of the history taken BEFORE that (4f6706d). The
+# two forked on purpose, and pushing this branch there is a LEAK -- not a
+# warning, a leak, because once a blob is in a public history `git rm` does not
+# remove it.
+#
+# The failure mode is not carelessness. It is muscle memory: `git push` is the
+# most automatic command there is, and the only thing separating a normal push
+# from publishing his life's work would be which remote name got typed.
 #
 # Blocks by CONTENT, not by branch name: it asks whether the commits being
 # pushed actually contain a forbidden path. A branch-name rule would be a guess;

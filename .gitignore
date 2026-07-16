@@ -1,35 +1,30 @@
-# ── Proprietary: experience-driven signal suite (not distributed) ────────
+# This is the PUBLIC mirror of WeissWave. It is generated -- do not edit here.
+# Source of truth is the private repo; regenerate with export_public.py.
+#
+# Paul's proprietary signal suite is NOT part of this repository and never has
+# been: it was never tracked in any commit, so there is nothing to find in the
+# history. These entries exist so a stray copy cannot be staged by accident.
 weisswave/combined.py
+strategies.json
+bot_strategies.json
+CLAUDE.md
+BACKLOG.md
 
-# ── Market data & search results (large / regenerable / private) ─────────
 market.duckdb
 market.duckdb.wal
 finder_results.pkl
-strategies.json
-bot_strategies.json
-scans/
-agent-tasks/
+stock_data/
+stock_data_hourly/
 signals_cache/
 grid_cache/
 sweep_results/
-stock_data/
-stock_data_hourly/
-
-# ── Python ────────────────────────────────────────────────────────────────
+scans/
+combo_smoke.csv
 __pycache__/
 *.py[cod]
 .venv/
 venv/
-
-# ── Local tooling ─────────────────────────────────────────────────────────
 .claude/
-
-# opencode: project-local agents are versioned; runtime scratch is not
 .opencode/_prompt.txt
 agent-tasks/
 .opencode/_task*.txt
-
-# ── Working notes: local-only ─────────────────────────────────────────────
-# Session rules and the open-decision list. Neither has ever been tracked.
-CLAUDE.md
-BACKLOG.md
