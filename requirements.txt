@@ -2,6 +2,19 @@
 pandas>=2.2
 numpy>=1.26
 
+# THE ENGINE. weisswave/portsim.py is one @njit loop over a 2D time x symbol
+# grid, and weisswave/rci.py njit-compiles the adaptive regression channel.
+# Without it every backtest and several suites die at import.
+#
+# 0.66 is the first release that works on Python 3.14, which is what this runs
+# on. numba tracks CPython closely, and on an older numba 3.14 fails with an
+# llvmlite ABI error rather than anything that names the real problem.
+#
+# It was missing from this file entirely: everything worked because numba was
+# already in the local env. A fresh machine would `pip install -r
+# requirements.txt`, get a clean install, and fail on the first sim.
+numba>=0.66
+
 # Data fetching + storage
 duckdb>=1.0
 yahooquery>=2.4
