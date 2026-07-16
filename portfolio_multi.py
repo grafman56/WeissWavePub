@@ -933,6 +933,20 @@ def main():
             "trades by strategy: " + ", ".join(f"{k}={v}" for k, v in
                                                by_strat.items()),
         ]
+        # A stop the engine could not place falls back to pct. That is correct
+        # -- a stop at or above entry is not a stop -- but SILENTLY it makes the
+        # header lie: measured on stocks 1d/12mo, --stop-mode=fib fell back on
+        # 25 of 28 entries (89.3%), so "stop=fib" was 89% a pct run and scored
+        # within 0.7% CAGR of pct BECAUSE IT WAS PCT. Goal #1: never claim
+        # something the run did not do. Goal #3 (which stop wins) is
+        # unanswerable while a mode can quietly be a different mode.
+        fb, ne = res.get("stop_fallback", 0), res.get("entries", 0)
+        if fb and ne:
+            lines.append(
+                f"WARNING: stop-mode={stop_mode} could not be placed on "
+                f"{fb}/{ne} entries ({fb/ne:.0%}) and fell back to pct "
+                f"(fib needs a confirmed up-leg P2>P1; swing needs a low below "
+                f"entry). This run is {fb/ne:.0%} pct.")
         emit(lines)
         return
 

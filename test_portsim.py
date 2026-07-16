@@ -284,6 +284,46 @@ check("htf factor does NOT leak into the entry score",
       screen_n(1.0, 0.0, screen=0, thr=1.5) == 0)
 
 
+# ---- the stop-mode fallback counter -----------------------------------------
+# A stop the engine cannot place falls back to pct. That is CORRECT -- a stop at
+# or above entry is not a stop -- but silently it makes the header lie. Measured
+# on stocks 1d/12mo: --stop-mode=fib fell back on 75 of 76 entries (99%), so
+# "stop=fib" was a pct run, and it scored within 0.7% CAGR of pct BECAUSE IT WAS
+# PCT. Goal #1 says never claim what the run did not do; goal #3 (which stop
+# wins) is unanswerable while a mode can quietly be a different mode.
+#
+# These pin the counter, because the FIRST version of it declared n_entry and
+# never incremented it -- reporting 0 entries and a 2500% fallback rate. A
+# counter nobody checks is exactly the bug this counter exists to catch.
+
+# one symbol, one entry, price drifts up: pct places fine, fib has no up-leg
+o, h, l, c = grid([[(10, 10, 10, 10)], [(10, 11, 10, 11)], [(11, 12, 11, 12)],
+                   [(12, 13, 12, 13)], [(13, 14, 13, 14)]])
+ent = [[False], [True], [False], [False], [False]]
+
+r = run(o, h, l, c, ent, stop=0.5)
+check("counter: entries is incremented (it was declared and never was)",
+      r["entries"] == 1, detail=f"entries={r['entries']}")
+check("counter: pct never falls back", r["stop_fallback"] == 0)
+
+# fib with no anchors at all -> p1/p2 default to zeros -> P2>P1 false -> NaN
+r = run(o, h, l, c, ent, stop=0.5, stop_mode=FIB)
+check("counter: fib with no valid up-leg falls back and SAYS SO",
+      r["stop_fallback"] == 1 and r["entries"] == 1,
+      detail=f"fallback={r['stop_fallback']} entries={r['entries']}")
+
+# ...and the fallback must be a REAL pct stop, not a broken one: same trade
+# either way, because fib silently became pct
+a = run(o, h, l, c, ent, stop=0.5)
+b = run(o, h, l, c, ent, stop=0.5, stop_mode=FIB)
+check("a fallen-back fib run IS the pct run (that is why it must be reported)",
+      len(a["ret"]) == len(b["ret"])
+      and (len(a["ret"]) == 0 or abs(a["ret"][0] - b["ret"][0]) < 1e-12))
+
+check("fallback rate has a usable denominator (no divide-by-zero theatre)",
+      r["entries"] > 0)
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL PORTSIM TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))

@@ -90,6 +90,8 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
     p_p3 = np.zeros(S)          # the life of the trade)
     last_close = np.zeros(S)
     n_open = 0
+    n_fallback = 0   # entries whose stop_mode placement was invalid
+    n_entry = 0      # entries taken, so fallback has a denominator
 
     p_sidx = np.zeros(S, np.int64)
     cap = T * max_pos + S + 16
@@ -323,13 +325,25 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
                             stop_px = np.nan
                     else:
                         stop_px = base * (1.0 - strat_stop[si])
-                    # any invalid/degenerate placement (incl. FIB with no
-                    # confirmed up-leg yet -> NaN, or P2<=P1) falls back to pct
+                    # Any invalid/degenerate placement falls back to pct: FIB
+                    # with no confirmed up-leg (NaN, or P2<=P1), or a SWING low
+                    # sitting ABOVE the entry (stop_px >= base = an instant
+                    # exit). The fallback is correct -- a stop at or above entry
+                    # is not a stop.
+                    #
+                    # COUNTED, because a silent fallback makes the tool lie: the
+                    # header prints stop=fib while the run is partly, or mostly,
+                    # pct. Goal #1 is a backtester that never claims something it
+                    # did not do, and "which stop mode wins" (goal #3) is
+                    # unanswerable if a mode can quietly be a different mode.
                     if (not np.isfinite(stop_px)) or stop_px >= base:
                         stop_px = base * (1.0 - strat_stop[si])
+                        if stop_mode != PCT:
+                            n_fallback += 1
                     shares = alloc / px
                     cash -= shares * px
                     held[s] = True
+                    n_entry += 1        # the fallback rate's denominator
                     p_shares[s] = shares
                     p_entry[s] = px
                     p_stop[s] = stop_px
@@ -362,7 +376,7 @@ def _simulate(open2d, high2d, low2d, close2d, valid,
         invested[t] = mkt / equity[t] if equity[t] > 0.0 else 0.0
 
     return (r_sym[:ntr], r_ret[:ntr], r_reason[:ntr], r_bars[:ntr],
-            r_strat[:ntr], equity, invested, n_open)
+            r_strat[:ntr], equity, invested, n_open, n_fallback, n_entry)
 
 
 def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
@@ -417,7 +431,11 @@ def simulate(open2d, high2d, low2d, close2d, valid, ent, score, sidx, ext,
                     hstart, int(htf_screen), float(htf_threshold),
                     int(gate_hard), int(reentry_cd),
                     float(cost_side), int(max_pos), float(init_cash))
-    sym, ret, reason, bars, strat, equity, invested, n_open = out
+    (sym, ret, reason, bars, strat, equity, invested, n_open,
+     n_fallback, n_entry) = out
     return {"sym": sym, "ret": ret, "reason": reason, "bars": bars,
             "strat": strat, "equity": equity, "invested": invested,
-            "open_end": int(n_open)}
+            "open_end": int(n_open),
+            # entries where the requested stop_mode could not be
+            # placed and pct was used instead. Reported, never hidden.
+            "stop_fallback": int(n_fallback), "entries": int(n_entry)}
