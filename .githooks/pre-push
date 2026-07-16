@@ -1,0 +1,88 @@
+#!/bin/sh
+# Refuse to push Paul's proprietary suite to a PUBLIC remote.
+#
+# WHY THIS EXISTS. From 2026-07-16 the private repo TRACKS combined.py,
+# strategies.json and bot_strategies.json so PC2 can pull them. WeissWavePub is
+# public and holds a snapshot of the history taken BEFORE that. The two have
+# forked, and from here on `git push public main` is a LEAK -- not a warning, a
+# leak, because once a blob is in a public history `git rm` does not remove it.
+#
+# The failure mode this guards is not carelessness. It is muscle memory: `git
+# push` is the most automatic command there is, and the only thing separating a
+# normal push from publishing his life's work is which remote name you typed.
+#
+# Blocks by CONTENT, not by branch name: it asks whether the commits being
+# pushed actually contain a forbidden path. A branch-name rule would be a guess;
+# this is the question that matters.
+#
+# Install (already done, and it survives clone):
+#     git config core.hooksPath .githooks
+#
+# Paul's own authorship note applies: combined.py, strategies.json and
+# bot_strategies.json are his, hand-written in Pine over years and ported by
+# him. They are not distributed.
+
+remote_name="$1"
+remote_url="$2"
+
+case "$remote_url" in
+    *WeissWavePub*|*github.com*)
+        public=1 ;;
+    *)
+        public=0 ;;
+esac
+
+[ "$public" = "1" ] || exit 0
+
+FORBIDDEN="weisswave/combined.py strategies.json bot_strategies.json"
+z40=0000000000000000000000000000000000000000
+bad=""
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "$z40" ] && continue          # a deletion; nothing to scan
+
+    if [ "$remote_sha" = "$z40" ]; then
+        # new branch on the remote: scan the whole tree at its tip. Cheaper and
+        # stricter than walking every commit, and a file present at ANY commit
+        # is what matters -- but the tip is what a cloner sees, and history is
+        # checked below via rev-list.
+        range="$local_sha"
+        commits=$(git rev-list "$local_sha" --not --remotes="$remote_name" 2>/dev/null)
+    else
+        commits=$(git rev-list "$remote_sha..$local_sha" 2>/dev/null)
+    fi
+
+    # the tip's tree: what anyone cloning would get
+    for f in $FORBIDDEN; do
+        if git ls-tree -r --name-only "$local_sha" -- "$f" 2>/dev/null | grep -q .; then
+            bad="$bad\n  $f (present at the tip of $local_sha)"
+        fi
+    done
+
+    # ...and the history being pushed: a blob removed later is still published
+    for c in $commits; do
+        for f in $FORBIDDEN; do
+            if git ls-tree -r --name-only "$c" -- "$f" 2>/dev/null | grep -q .; then
+                bad="$bad\n  $f (in commit $(git rev-parse --short "$c"))"
+                break
+            fi
+        done
+    done
+done
+
+if [ -n "$bad" ]; then
+    printf '\n=========================================================\n'
+    printf 'PUSH BLOCKED: proprietary files headed for a PUBLIC remote\n'
+    printf '=========================================================\n'
+    printf '  remote: %s\n          %s\n' "$remote_name" "$remote_url"
+    printf '  found:%b\n' "$bad"
+    printf '\nWeissWavePub is a SNAPSHOT taken before the private repo began\n'
+    printf 'tracking these. The histories have forked on purpose. Once a blob\n'
+    printf 'is in a public history, `git rm` does not remove it.\n'
+    printf '\nPush to `origin` (GitLab -> private GitHub mirror) instead.\n'
+    printf 'To update the public repo, export a sanitized tree deliberately.\n'
+    printf '\nIf you really mean it: git push --no-verify\n\n'
+    exit 1
+fi
+
+exit 0
