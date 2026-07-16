@@ -11,6 +11,12 @@ Sweep axes accept comma lists; the cartesian product is run:
         bounce needs an up-close off the band, bounce-trend needs only trend)
     --trail-mode=pct,structure,fib   --fib-ext=1.0,1.618  (fib-ladder trail)
     --trail-activate=0,0.04,0.06
+    --stop=0.03,0.05,0.08   --target=0,0.06,0.10   (THE TWO SIMPLE ONES: stop %
+        and take-profit %. 0 = leave each strategy's own value alone. Both are
+        per-strategy arrays the engine reads at SIM time, so sweeping them costs
+        ONE grid, not one per value -- --stop was unreadable here until 2026-07-16
+        purely because nobody added the line next to --target's.)
+    --trail-dist=0.03,0.06,0.10   --max-positions=3,5
     --conf-entry  --w-signal=0,1,2  --w-trend=0,1  --w-fib_prox=0,1,2
         --conf-threshold=0.5,1,1.5   (weighted-confluence entry; each factor's
         --w-<name> is a sweep axis, 0 = mute it)
@@ -30,7 +36,6 @@ Walk-forward: --wf-folds=6 splits the whole history into 6 contiguous folds
 and scores every config on each; ranks by mean CAGR and shows wf_min / wf_pos
 (folds positive) -- a config that's green across most folds survived regimes,
 not one lucky window.
-    --trail-dist=0.03,0.06,0.10   --target=0,0.06   --max-positions=3,5
 
 Fixed (rebuild the grid to change): strategies, --gate, --market, --interval,
 --months, and the fib pivot window --fib-left/--fib-right. Everything else is
@@ -215,6 +220,14 @@ def _sweep(args, shard=None):
 
     ax = {
         "stop": listarg(args, "stop-mode", ["swing"], str),
+        # THE STOP PERCENTAGE, sweepable. portfolio_multi has read --stop since
+        # forever; sweep never did -- so the one exit knob Paul most wanted to
+        # tune was the one you could not tune. It needs no grid rebuild: st_stop
+        # is a per-strategy ARRAY handed to portsim at sim time, exactly like
+        # st_tgt and st_hold, which sweep ALREADY overrides two lines apart
+        # (tgt_arr/hold_arr below). The sibling was sitting right there.
+        # 0 = leave each strategy's own stop_pct alone (same idiom as --target).
+        "spct": listarg(args, "stop", [0.0], float),
         "atrm": listarg(args, "atr-mult", [2.5], float),
         "swb": listarg(args, "swing-buf", [0.005], float),
         "fr": listarg(args, "fib-stop", [0.786], float),   # fib retr. ratio
@@ -259,16 +272,20 @@ def _sweep(args, shard=None):
     build_s = time.time() - t0
 
     def sim_metrics(Ax, Vx, ENTx, SIDXx, EXTx, gridx,
-                    sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, rcd,
-                    thr, htf_thr, wvec):
+                    sm, sv, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd,
+                    rcd, thr, htf_thr, wvec):
         """Run one config over a (possibly sliced) grid, return its metrics."""
         yrs = max((pd.Timestamp(gridx[-1]) - pd.Timestamp(gridx[0])).days
                   / 365.25, 1e-9)
+        # All three are per-strategy arrays the engine reads at SIM time, so
+        # overriding them costs nothing and needs no rebuild. stop_arr is the
+        # new one; the other two have worked this way all along.
+        stop_arr = np.full_like(st_stop, sv) if sv > 0 else st_stop
         tgt_arr = np.full_like(st_tgt, tg) if tg > 0 else st_tgt
         hold_arr = np.full(st_hold.shape, hd, np.int64)   # 0 = no time exit
         res = portsim.simulate(
             Ax["O"], Ax["H"], Ax["L"], Ax["C"], Vx, ENTx, Ax["SCORE"], SIDXx,
-            EXTx, Ax["ATR"], Ax["SW"], st_stop, hold_arr, tgt_arr,
+            EXTx, Ax["ATR"], Ax["SW"], stop_arr, hold_arr, tgt_arr,
             stop_mode=STOP_MODES.get(sm, 0), atr_mult=am, swing_buf=sb,
             trail_act=ta, trail_dist=td, cost_side=cost_side, max_pos=mp,
             init_cash=capital, p1=Ax["P1"], p2=Ax["P2"], p3=Ax["P3"],
@@ -311,8 +328,8 @@ def _sweep(args, shard=None):
         tr, te = seg(0, sp), seg(sp, None)
 
     combos = list(itertools.product(
-        ax["stop"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"], ax["tm"],
-        ax["ftg"], ax["fe"], ax["ta"], ax["td"], ax["tgt"], ax["mp"],
+        ax["stop"], ax["spct"], ax["atrm"], ax["swb"], ax["fr"], ax["fb"],
+        ax["tm"], ax["ftg"], ax["fe"], ax["ta"], ax["td"], ax["tgt"], ax["mp"],
         ax["hold"], ax["rcd"], thr_list, htf_thr_list, *w_lists))
     n_all = len(combos)
     if shard is not None:
@@ -320,13 +337,17 @@ def _sweep(args, shard=None):
     rows = []
     t1 = time.time()
     for combo in combos:
-        sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, rcd = combo[:14]
-        thr, htf_thr = combo[14], combo[15]
-        wvec = np.array(combo[16:])            # per-factor weights (order=names)
-        p = (sm, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, rcd, thr,
+        sm, sv, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, rcd = combo[:15]
+        thr, htf_thr = combo[15], combo[16]
+        wvec = np.array(combo[17:])            # per-factor weights (order=names)
+        p = (sm, sv, am, sb, fr, fb, tm, ftg, fe, ta, td, tg, mp, hd, rcd, thr,
              htf_thr, wvec)
         row = {
-            "stop": sm, "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
+            "stop": sm,
+            # "-" = each strategy's own stop_pct, not "no stop". Same
+            # convention as tgt below.
+            "spct": f"{sv:.0%}" if sv > 0 else "-",
+            "atrm": am, "swb": sb, "fibr": fr, "fibbuf": fb,
             "tmode": tm, "ftgt": ftg, "entry": fe,
             "trail": _trail_label(tm, ta, td),
             "tgt": f"{tg:.0%}" if tg > 0 else "-", "mp": mp,

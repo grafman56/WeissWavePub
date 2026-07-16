@@ -536,6 +536,30 @@ check("agent_search passes sampled weights, not the CLI default",
       re.search(r'weights=c\["w"\]', _as) is not None)
 
 
+# 9. THE STOP PERCENTAGE IS SWEEPABLE ----------------------------------------
+# portfolio_multi has read --stop since forever; sweep never did, so the one
+# exit knob Paul most wanted to tune ("lets work more on tuning something simple
+# like regular stops and take profit %s") was the only one you could not tune.
+#
+# It never needed a grid rebuild: st_stop is a per-strategy ARRAY the engine
+# reads at SIM time, exactly like st_tgt and st_hold -- both of which sweep has
+# always overridden, two lines away (tgt_arr/hold_arr). The working sibling was
+# sitting right there. Same shape as every other bug here.
+check("sweep.py: --stop is a sweep axis",
+      re.search(r'"spct":\s*listarg\(args,\s*"stop"', _sw) is not None)
+check("sweep.py: the swept stop actually reaches the engine",
+      "stop_arr = np.full_like(st_stop, sv)" in _sw
+      and re.search(r'Ax\["SW"\],\s*stop_arr,', _sw) is not None,
+      detail="an axis that never reaches portsim is a dead flag with a column")
+check("sweep.py: --stop=0 means 'each strategy's own', like --target",
+      "if sv > 0 else st_stop" in _sw)
+check("both tools read --stop",
+      re.search(r'arg\(args,\s*"stop",\s*None\)', _pm) is not None
+      and re.search(r'listarg\(args,\s*"stop"', _sw) is not None,
+      detail="portfolio_multi=arg(), sweep=listarg() -- different forms, and a "
+             "pin that checks only one spelling is a green light with no bulb")
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL GRID-CACHE TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))
