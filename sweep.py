@@ -382,7 +382,24 @@ def _sweep(args, shard=None):
         rows.append(row)
     sweep_s = time.time() - t1
 
-    sort_col = "wf_exc" if wf else "te_exc" if oos else "exc%"
+    # OOS RANKS ON TRAIN. It ranked on te_exc -- the HELD-OUT set -- which makes
+    # the leaderboard's top row the config that did best on the data it was
+    # never supposed to see. That is selection on the holdout: the exact thing
+    # --oos-split exists to prevent, and the docstring already promised the
+    # opposite ("tunes/ranks configs on the earlier 70% (TRAIN) and scores each
+    # on the held-out later 30% (TEST) it never saw").
+    #
+    # Goal #1 is a backtester that never lies. Ranking N configs by their test
+    # score and reporting the winner's test score IS the lie -- the number is a
+    # max over N draws, not an out-of-sample estimate. Rank on train; the test
+    # column is then a CHECK ("did it hold up?"), which is what it is for.
+    #
+    # wf keeps wf_exc: walk-forward scores every config on every fold and ranks
+    # by the mean, so there is no held-out slice being peeked at. Different
+    # design, not the same bug. (The known weakness there is separate and
+    # already open: one fixed holdout scored against ~750 configs -- see the
+    # rolling/nested holdout item.)
+    sort_col = "wf_exc" if wf else "tr_exc" if oos else "exc%"
     df = pd.DataFrame(rows).sort_values(sort_col, ascending=False) \
         .reset_index(drop=True)
     drop_cols = ["stop", "atrm", "swb", "fibr", "fibbuf", "tmode", "ftgt",
@@ -422,8 +439,10 @@ def _display(df, meta):
               f"{' | '.join(meta['fold_starts'])} | {meta['end']}")
     elif meta["oos"]:
         print(f"OOS split {meta['oos_split']:.0%}: train {meta['start']} -> "
-              f"test {meta['oos_test_start']} -> {meta['end']}   (ranked by TEST "
-              f"excess over buy&hold; exc = active - hold)")
+              f"test {meta['oos_test_start']} -> {meta['end']}   (ranked by "
+              f"TRAIN excess; te_* is the HELD-OUT CHECK, never the ranking -- "
+              f"a config whose te_CAGR holds near tr_CAGR survived, one that "
+              f"craters overfit)")
     else:
         print("ranked by exc% = active CAGR - buy&hold CAGR (of the traded "
               "names over the window)")

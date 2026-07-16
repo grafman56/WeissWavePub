@@ -590,6 +590,35 @@ check("build_grid: the CLI target is not overridden BY the strategy file",
       detail="s.get('target', gtarget) makes the strategy file beat the CLI")
 
 
+# 11. THE HOLDOUT IS NOT THE RANKING ------------------------------------------
+# GOAL #1: "must genuinely walk-forward test and must never lie."
+#
+# --oos-split ranked by te_exc -- the HELD-OUT set -- so the leaderboard's top
+# row was the config that did best on the data it was never supposed to see.
+# That is selection on the holdout, and the number it reports is a max over N
+# draws, not an out-of-sample estimate. The docstring already promised the
+# opposite ("tunes/ranks configs on the earlier 70% (TRAIN) and scores each on
+# the held-out later 30% (TEST) it never saw"): the design was right and the
+# code did the other thing.
+#
+# Measured on 8 configs, stocks 1d/24mo: the config with the BEST te_exc (63.7)
+# ranked 5th on train. Under the old sort it was #1, chosen for its holdout
+# score.
+#
+# wf legitimately keeps wf_exc: walk-forward scores every config on every fold
+# and ranks by the mean -- no slice is held back and then peeked at. Different
+# design, not the same bug.
+check("sweep: OOS ranks on TRAIN, never on the held-out test",
+      re.search(r'sort_col\s*=\s*"wf_exc"\s*if\s*wf\s*else\s*"tr_exc"\s*if\s*oos',
+                _sw) is not None,
+      detail="ranking by te_exc selects ON the holdout")
+check("sweep: no code path sorts by te_exc",
+      not re.search(r'sort_col.*"te_exc"', _sw))
+check("sweep: the header does not claim a TEST ranking",
+      "ranked by TEST" not in _sw,
+      detail="it printed 'ranked by TEST excess' -- true then, a lie now")
+
+
 if __name__ == "__main__":
     print("\n" + ("ALL GRID-CACHE TRUST TESTS PASSED" if not FAILS
                   else f"{len(FAILS)} FAILURES: " + ", ".join(FAILS)))
